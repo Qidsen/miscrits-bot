@@ -13,7 +13,8 @@ log = logging.getLogger(__name__)
 
 WAITING = "Ждём игру…"
 EMPTY = "Здесь мискритов нет"
-UNKNOWN_ZONE = "Зона пока неизвестна — узнаю при следующем обновлении"
+UNKNOWN_ZONE = "Зона пока неизвестна · открой в игре Коллекции, чтобы обновить"
+EXPIRED = "Ключ игры истёк · открой в игре Коллекции, чтобы HUD обновился"
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class Controller:
     POLL_INTERVAL = 15.0
     IDLE_LIMIT = 600.0  # лог не растёт 10 минут — игра закрыта или стоит в меню
     MIN_INTERVAL = 5.0
+    LOCATION_SETTLE = 2.0  # «Sending update_location» пишется до того, как сервер применил переход
     TOKEN_MARGIN = 30.0
 
     def __init__(self, watcher, catalogs, fetch, submit, clock=time.monotonic, wall=time.time,
@@ -43,7 +45,10 @@ class Controller:
         self._token = None
         self._exp = 0.0
         self._blocked_token = None
-        self._force = self._manual = False
+        self._manual = False
+        self._force_at = None
+        self._location_seq = 0
+        self._inflight_seq = 0
         self._last_activity = None
         self._future = None
         self._inflight_token = None
@@ -75,7 +80,8 @@ class Controller:
         elif isinstance(event, LocationChanged):
             # Зону берём из лога сразу: это работает и когда ключ уже истёк.
             self._location = (event.location_id, event.area_id)
-            self._force = True
+            self._location_seq += 1
+            self._force_at = self._clock() + self.LOCATION_SETTLE
         elif isinstance(event, Activity):
             self._last_activity = self._clock()
 
@@ -91,16 +97,18 @@ class Controller:
             return
         since = float("inf") if self._last_start is None else self._clock() - self._last_start
         due = (
-            self._force
+            (self._force_at is not None and self._clock() >= self._force_at)
             or (self._last_ok is None and since >= self.MIN_INTERVAL)
             or (self._manual and since >= self.MIN_INTERVAL)
             or (since >= self.POLL_INTERVAL and self._game_active())
         )
         if not due:
             return
-        self._force = self._manual = False
+        self._force_at = None
+        self._manual = False
         self._last_start = self._clock()
         self._inflight_token = self._token
+        self._inflight_seq = self._location_seq
         self._future = self._submit(self._fetch, self._token)
 
     def _game_active(self) -> bool:
@@ -126,7 +134,9 @@ class Controller:
             self._network_failed = False
             if player.location_id:
                 self._names[player.location_id] = player.location_name
-            self._location = (player.location_id, player.area_id)
+            if self._inflight_seq == self._location_seq:
+                # Пока запрос летел, лог не сообщал о новом переходе — зоне сервера можно верить.
+                self._location = (player.location_id, player.area_id)
             self._on_update(player, dict(self._names), self._last_ok)
 
     def _note(self) -> str | None:
@@ -143,7 +153,7 @@ class Controller:
     def _state(self) -> UiState:
         catalog = self._catalogs()
         if self._player is None or catalog is None:
-            return UiState(None, WAITING, None)
+            return UiState(None, EXPIRED if self._token is not None and not self._token_valid() else WAITING, None)
         note = self._note()
         location_id, area_id = self._location
         name = self._names.get(location_id, "") if location_id else self._player.location_name

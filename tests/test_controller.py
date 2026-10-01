@@ -4,7 +4,7 @@ from concurrent.futures import Future
 import pytest
 
 from miscrits_hud.catalog import Catalog
-from miscrits_hud.controller import EMPTY, UNKNOWN_ZONE, WAITING, Controller
+from miscrits_hud.controller import EMPTY, EXPIRED, UNKNOWN_ZONE, WAITING, Controller
 from miscrits_hud.game_api import AuthError, NetworkError, Player
 from miscrits_hud.log_watcher import Activity, LocationChanged, TokenSeen
 
@@ -17,6 +17,8 @@ FOREST = Player("Forest", 1, [{"m": 1, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "
 
 class Rig:
     def __init__(self, cached=None):
+        self.deferred = False
+        self.pending = []
         self.saved = []
         self.events = []
         self.t = 0.0
@@ -39,9 +41,11 @@ class Rig:
             raise result
         return result
 
-    @staticmethod
-    def submit(fn, *args):
+    def submit(self, fn, *args):
         future = Future()
+        if self.deferred:
+            self.pending.append((future, fn, args))
+            return future
         try:
             future.set_result(fn(*args))
         except Exception as e:
@@ -66,7 +70,7 @@ def test_no_token_waits(rig):
 
 def test_expired_token_waits_without_fetch(rig):
     state = rig.tick(0, TokenSeen("old", NOW - 60))
-    assert state.message == WAITING
+    assert state.message == EXPIRED
     assert rig.calls == []
 
 
@@ -105,9 +109,12 @@ def test_stops_polling_when_log_idle_10_min(rig):
     assert len(rig.calls) == calls + 1
 
 
-def test_location_change_refreshes_immediately(rig):
+def test_location_change_refreshes_after_settle(rig):
+    # строку "Sending update_location" игра пишет до того, как сервер применил переход
     rig.tick(0, TokenSeen("tok", NOW + 3600))
     rig.tick(1, LocationChanged(7, 1))
+    assert len(rig.calls) == 1
+    rig.tick(2)
     assert len(rig.calls) == 2
 
 
@@ -123,7 +130,7 @@ def test_manual_refresh_respects_5s(rig):
 def test_auth_error_stops_until_new_token(rig):
     rig.results = [AuthError("403")]
     state = rig.tick(0, TokenSeen("tok", NOW + 3600))
-    assert state.message == WAITING
+    assert state.message == EXPIRED
     rig.tick(30, Activity(), LocationChanged(7, 1))
     assert rig.calls == ["tok"]
     rig.tick(1, TokenSeen("tok2", NOW + 3600))
@@ -133,7 +140,8 @@ def test_auth_error_stops_until_new_token(rig):
 def test_network_error_keeps_view_and_marks_stale(rig):
     rig.tick(0, TokenSeen("tok", NOW + 3600))
     rig.results = [NetworkError("down")]
-    state = rig.tick(180, LocationChanged(2, 1))
+    rig.tick(178, LocationChanged(2, 1))
+    state = rig.tick(2)
     assert state.view is not None
     assert state.note == "⚠ нет связи · обновлено 3 мин назад"
 
@@ -178,3 +186,28 @@ def test_successful_fetch_is_saved(rig):
     rig.tick(0, TokenSeen("tok", NOW + 3600))
     player, names, when = rig.saved[-1]
     assert player == FOREST and names == {2: "Forest"} and when == NOW
+
+
+def resolve(rig):
+    future, fn, args = rig.pending.pop(0)
+    try:
+        future.set_result(fn(*args))
+    except Exception as e:
+        future.set_exception(e)
+
+
+def test_inflight_response_does_not_override_newer_log_zone():
+    rig = Rig(cached=(FOREST, {2: "Forest", 7: "Hidden Forest"}, NOW - 10))
+    rig.deferred = True
+    rig.tick(0, Activity(), TokenSeen("tok", NOW + 3600))  # первое чтение лога всегда даёт Activity
+    assert len(rig.pending) == 1
+    state = rig.tick(1, LocationChanged(7, 1))
+    assert state.view.location_name == "Hidden Forest"
+    resolve(rig)  # сервер ответил старой зоной (Forest)
+    rig.tick(0.5)
+    assert rig.c._state().view.location_name == "Hidden Forest"
+
+
+def test_unknown_zone_points_to_collections():
+    assert "Коллекции" in UNKNOWN_ZONE
+    assert "Коллекции" in EXPIRED
