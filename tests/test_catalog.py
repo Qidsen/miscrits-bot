@@ -7,7 +7,7 @@ DATA = [
     {"id": 1, "element": "Fire", "names": ["Flue", "Chimnay", "Firebrawl", "Afterburn"], "rarity": "Common",
      "locations": {"Forest": {"1": []}}, "abilities": []},
     {"id": 5, "element": "Nature", "names": ["Cubsprout", "b", "c", "d"], "rarity": "Common",
-     "locations": {"Forest": {"1": [], "2": []}, "Hidden Forest": {"1": [0, 1]}}},
+     "locations": {"Forest": {"1": [], "2": []}, "Hidden Forest": {"1": [1, 4]}}},
     {"id": 9, "element": "Water", "names": ["Nonwild", "b", "c", "d"], "rarity": "Legendary"},
 ]
 
@@ -48,3 +48,10 @@ def test_cache_keeps_previous_on_broken_file(tmp_path):
 
 def test_cache_missing_file(tmp_path):
     assert CatalogCache(tmp_path / "none.json").get() is None
+
+
+def test_spawn_days():
+    catalog = Catalog.from_json(json.dumps(DATA))
+    cub = catalog.by_id[5]
+    assert cub.days("Hidden Forest", 1) == (1, 4)
+    assert cub.days("Forest", 2) == ()  # пусто — водится каждый день

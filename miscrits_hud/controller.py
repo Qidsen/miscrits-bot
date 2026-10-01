@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .game_api import AuthError
 from .log_watcher import Activity, LocationChanged, TokenSeen
-from .model import ZoneView, build_view
+from .model import ZoneView, build_view, utc_weekday
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class Controller:
     TOKEN_MARGIN = 30.0
 
     def __init__(self, watcher, catalogs, fetch, submit, clock=time.monotonic, wall=time.time,
-                 cached=None, on_update=None):
+                 cached=None, on_update=None, weekday=utc_weekday):
         """cached: (Player, {location_id: name}, время получения) из прошлого запуска.
         on_update(player, names, when) вызывается после каждого успешного запроса."""
         self._watcher = watcher
@@ -42,6 +42,7 @@ class Controller:
         self._clock = clock
         self._wall = wall
         self._on_update = on_update or (lambda player, names, when: None)
+        self._weekday = weekday
         self._token = None
         self._exp = 0.0
         self._blocked_token = None
@@ -160,5 +161,5 @@ class Controller:
         if location_id and not name:
             return UiState(None, UNKNOWN_ZONE, note)
         player = dataclasses.replace(self._player, location_name=name, location_id=location_id, area_id=area_id)
-        view = build_view(catalog, player)
+        view = build_view(catalog, player, self._weekday())
         return UiState(view, EMPTY if view.total == 0 else None, note)

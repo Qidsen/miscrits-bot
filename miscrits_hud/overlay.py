@@ -7,7 +7,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from . import hotkeys
-from .model import format_ranks
+from .model import format_days, format_ranks
 from .rank import rank_tier
 
 ICON = 40
@@ -130,10 +130,16 @@ class OverlayWindow(QWidget):
             view = state.view
             self._layout.addWidget(QLabel(
                 f"<b>{view.location_name} · зона {view.area_id}</b>"
-                f"<span style='color:#9a9a9a'>&nbsp;&nbsp;{view.caught_count}/{view.total}</span>"
+                f"<span style='color:#9a9a9a'>&nbsp;&nbsp;{view.caught_count}/{view.total} сегодня</span>"
             ))
-            for row in view.rows:
+            for row in view.today_rows:
                 self._layout.addWidget(self._row_widget(row))
+            if view.other_rows:
+                divider = QLabel("<span style='color:#9a9a9a'>В другие дни</span>")
+                divider.setStyleSheet("border-top: 1px solid rgba(255,255,255,40); padding-top: 4px; margin-top: 2px;")
+                self._layout.addWidget(divider)
+                for row in view.other_rows:
+                    self._layout.addWidget(self._row_widget(row))
         if state.message:
             self._layout.addWidget(QLabel(f"<span style='color:#c8c8c8'>{state.message}</span>"))
         if state.note:
@@ -151,9 +157,13 @@ class OverlayWindow(QWidget):
         line = QHBoxLayout(widget)
         line.setContentsMargins(0, 0, 0, 0)
         icon = QLabel()
-        icon.setPixmap(_icon_pixmap(self._icon_lookup(row.name), row.name, row.element, row.caught))
+        # Не сегодняшние приглушены так же, как непойманные: ловить их сейчас нельзя.
+        icon.setPixmap(_icon_pixmap(self._icon_lookup(row.name), row.name, row.element, row.caught and row.today))
         icon.setFixedSize(ICON, ICON)
-        name = QLabel(row.name if row.caught else f"<span style='color:#8a8a8a'>{row.name}</span>")
+        title = row.name if row.caught and row.today else f"<span style='color:#8a8a8a'>{row.name}</span>"
+        if not row.today:
+            title += f"<br><span style='color:#7a7a7a; font-size:11px'>{format_days(row.days)}</span>"
+        name = QLabel(title)
         ranks = QLabel(_ranks_html(row.ranks))
         ranks.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         line.addWidget(icon)
