@@ -90,3 +90,16 @@ def test_renders_other_days_block(qapp):
     assert "1/1 сегодня" in all_text
     assert "В другие дни" in all_text
     assert "сб · вс" in all_text
+
+
+def test_render_while_hidden_has_full_size_when_shown(qapp):
+    # Как в приложении: HUD прячется (игра не на переднем плане) и в том же тике получает данные.
+    window = OverlayWindow(icon_lookup=lambda name: None)
+    view = ZoneView("Forest", 1, tuple(Row(i, f"M{i}", "Fire", "Common", ("A",)) for i in range(5)))
+    window.show()
+    window.hide()
+    window.render(UiState(view, None, None))
+    qapp.processEvents()
+    window.show()
+    qapp.processEvents()
+    assert window.height() > 100
