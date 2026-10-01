@@ -1,11 +1,13 @@
 """Склейка: таймер → Controller.tick() → OverlayWindow.render()."""
 
 import logging
+import os
 import queue
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QLockFile, Qt, QTimer
+from PySide6.QtCore import QLockFile, QPoint, Qt, QTimer
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -19,6 +21,8 @@ from .log_watcher import LogWatcher
 from .overlay import OverlayWindow
 
 HK_TOGGLE, HK_REFRESH, HK_MOVE = 1, 2, 3
+GAME_EXE = "miscrits.exe"
+GAME_CHECK_INTERVAL = 2.0
 TICK_MS = 500
 
 
@@ -82,8 +86,8 @@ def main() -> int:
     config_path = home / "config.json"
     cfg = load_config(config_path)
     screen = app.primaryScreen().availableGeometry()
-    window.move(cfg.x if cfg.x is not None else screen.right() - window.width() - 20,
-                cfg.y if cfg.y is not None else screen.top() + 20)
+    window.place(QPoint(cfg.x if cfg.x is not None else screen.right() - window.width() - 20,
+                        cfg.y if cfg.y is not None else screen.top() + 20))
 
     def save_position():
         cfg.x, cfg.y = window.x(), window.y()
@@ -91,9 +95,9 @@ def main() -> int:
 
     def on_hotkey(hotkey_id):
         if hotkey_id == HK_TOGGLE:
-            cfg.visible = not window.isVisible()
-            window.setVisible(cfg.visible)
+            cfg.visible = not cfg.visible
             save_config(config_path, cfg)
+            update_placement()
         elif hotkey_id == HK_REFRESH:
             controller.request_refresh()
         elif hotkey_id == HK_MOVE:
@@ -124,12 +128,28 @@ def main() -> int:
                                 (HK_MOVE, hotkeys.MOD_CONTROL, hotkeys.VK_F8)):
         if not hotkeys.register(hwnd, hotkey_id, mods, vk):
             logging.warning("hotkey %s is taken by another program", hotkey_id)
-    if not cfg.visible:
-        window.hide()
+    own_pid = os.getpid()
+    game = {"running": False, "checked": float("-inf")}
+
+    def update_placement():
+        # HUD держится над игрой, пока активна игра (или сам HUD); в других окнах — прячется.
+        now = time.monotonic()
+        if now - game["checked"] >= GAME_CHECK_INTERVAL:
+            game["running"] = GAME_EXE in hotkeys.running_process_names()
+            game["checked"] = now
+        name, pid = hotkeys.foreground_process()
+        mode = hotkeys.overlay_mode(name, pid == own_pid, game["running"], GAME_EXE)
+        show = cfg.visible and mode != "hidden"
+        if show and not window.isVisible():
+            window.show()
+            hotkeys.set_click_through(hwnd, not window.move_mode)
+        elif not show and window.isVisible():
+            window.hide()
+        if show:
+            hotkeys.set_topmost(hwnd, mode == "top")
 
     def tick():
-        if window.isVisible():
-            hotkeys.keep_on_top(hwnd)
+        update_placement()
         state = controller.tick()
         if state is not None:
             window.render(state)
