@@ -27,6 +27,7 @@ class Player:
     location_name: str
     area_id: int
     miscrits: list
+    location_id: int = 0
 
 
 def parse_player(raw: str) -> Player:
@@ -39,7 +40,10 @@ def parse_player(raw: str) -> Player:
             data = json.loads(data)
         area = data.get("area") or {}
         location = area.get("location") or {}
-        return Player(str(location.get("name") or ""), int(area.get("area_id") or 0), list(data["miscrits"]))
+        return Player(
+            str(location.get("name") or ""), int(area.get("area_id") or 0), list(data["miscrits"]),
+            location_id=int(location.get("id") or 0),
+        )
     except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise NetworkError(f"unexpected response: {e!r}") from e
 

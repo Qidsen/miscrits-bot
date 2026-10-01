@@ -114,13 +114,14 @@ class OverlayWindow(QWidget):
                 f"<b>{view.location_name} · зона {view.area_id}</b>"
                 f"<span style='color:#9a9a9a'>&nbsp;&nbsp;{view.caught_count}/{view.total}</span>"
             ))
-            if state.stale_minutes is not None:
-                self._layout.addWidget(QLabel(
-                    f"<span style='color:#ffd166'>⚠ нет связи · обновлено {state.stale_minutes} мин назад</span>"))
             for row in view.rows:
                 self._layout.addWidget(self._row_widget(row))
         if state.message:
             self._layout.addWidget(QLabel(f"<span style='color:#c8c8c8'>{state.message}</span>"))
+        if state.note:
+            note = QLabel(f"<span style='color:#ffd166'>{state.note}</span>")
+            note.setWordWrap(True)
+            self._layout.addWidget(note)
         self.adjustSize()
 
     def _row_widget(self, row) -> QWidget:

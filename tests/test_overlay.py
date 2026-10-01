@@ -38,7 +38,7 @@ def test_renders_message_and_stale(qapp):
     window.render(UiState(None, "Ждём игру…", None))
     assert "Ждём игру…" in " ".join(texts(window))
     view = ZoneView("Forest", 2, (Row(1, "Flue", "Fire", "Common", ("A",)),))
-    window.render(UiState(view, None, 3))
+    window.render(UiState(view, None, "⚠ нет связи · обновлено 3 мин назад"))
     assert "обновлено 3 мин назад" in " ".join(texts(window))
 
 

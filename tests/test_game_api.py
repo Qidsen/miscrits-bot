@@ -18,7 +18,7 @@ AREA = {"area_id": 1, "location": {"id": 7, "name": "Hidden Forest"}, "name": "H
 
 def test_parse_player():
     player = parse_player(response({"area": AREA, "miscrits": [MISCRIT]}))
-    assert player == Player("Hidden Forest", 1, [MISCRIT])
+    assert player == Player("Hidden Forest", 1, [MISCRIT], location_id=7)
 
 
 def test_parse_player_without_area():

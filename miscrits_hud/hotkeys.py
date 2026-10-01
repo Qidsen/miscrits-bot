@@ -20,6 +20,10 @@ _user32.GetWindowLongPtrW.argtypes = (wintypes.HWND, ctypes.c_int)
 _user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
 _user32.SetWindowLongPtrW.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t)
 _user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+_user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT)
+
+_HWND_TOPMOST = wintypes.HWND(-1)
+_SWP_NOSIZE, _SWP_NOMOVE, _SWP_NOACTIVATE = 0x0001, 0x0002, 0x0010
 
 
 def register(hwnd: int, hotkey_id: int, modifiers: int, vk: int) -> bool:
@@ -34,3 +38,8 @@ def set_click_through(hwnd: int, enabled: bool) -> None:
     style = _user32.GetWindowLongPtrW(hwnd, _GWL_EXSTYLE) | _WS_EX_LAYERED
     style = style | _WS_EX_TRANSPARENT if enabled else style & ~_WS_EX_TRANSPARENT
     _user32.SetWindowLongPtrW(hwnd, _GWL_EXSTYLE, style)
+
+
+def keep_on_top(hwnd: int) -> None:
+    # Игра или другие окна могут подняться выше — возвращаем HUD наверх без кражи фокуса.
+    _user32.SetWindowPos(hwnd, _HWND_TOPMOST, 0, 0, 0, 0, _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE)

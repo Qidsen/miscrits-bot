@@ -4,7 +4,7 @@ from concurrent.futures import Future
 import pytest
 
 from miscrits_hud.catalog import Catalog
-from miscrits_hud.controller import EMPTY, WAITING, Controller
+from miscrits_hud.controller import EMPTY, UNKNOWN_ZONE, WAITING, Controller
 from miscrits_hud.game_api import AuthError, NetworkError, Player
 from miscrits_hud.log_watcher import Activity, LocationChanged, TokenSeen
 
@@ -12,11 +12,12 @@ NOW = 1_800_000_000.0
 CATALOG = Catalog.from_json(json.dumps([
     {"id": 1, "element": "Fire", "names": ["Flue", "b", "c", "d"], "rarity": "Common", "locations": {"Forest": {"1": []}}},
 ]))
-FOREST = Player("Forest", 1, [{"m": 1, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
+FOREST = Player("Forest", 1, [{"m": 1, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}], location_id=2)
 
 
 class Rig:
-    def __init__(self):
+    def __init__(self, cached=None):
+        self.saved = []
         self.events = []
         self.t = 0.0
         self.results = []
@@ -24,6 +25,7 @@ class Rig:
         self.c = Controller(
             watcher=self, catalogs=lambda: CATALOG, fetch=self.fetch, submit=self.submit,
             clock=lambda: self.t, wall=lambda: NOW + self.t,
+            cached=cached, on_update=lambda *args: self.saved.append(args),
         )
 
     def poll(self):
@@ -118,9 +120,9 @@ def test_auth_error_stops_until_new_token(rig):
 def test_network_error_keeps_view_and_marks_stale(rig):
     rig.tick(0, TokenSeen("tok", NOW + 3600))
     rig.results = [NetworkError("down")]
-    state = rig.tick(180, LocationChanged(7, 1))
+    state = rig.tick(180, LocationChanged(2, 1))
     assert state.view is not None
-    assert state.stale_minutes == 3
+    assert state.note == "⚠ нет связи · обновлено 3 мин назад"
 
 
 def test_empty_zone_message(rig):
@@ -137,3 +139,29 @@ def test_no_retry_storm_on_initial_failure(rig):
     assert len(rig.calls) == 1
     rig.tick(3)
     assert len(rig.calls) == 2
+
+
+def test_expired_token_keeps_collection_and_follows_log(rig):
+    rig.tick(0, TokenSeen("tok", NOW + 60), LocationChanged(2, 1))
+    state = rig.tick(60, LocationChanged(7, 1))  # ключ истёк, зона ещё неизвестна
+    assert len(rig.calls) == 1
+    assert state.view is None and state.message == UNKNOWN_ZONE
+    assert "коллекция от" in state.note
+    state = rig.tick(1, LocationChanged(2, 1))
+    assert state.view.location_name == "Forest"
+    assert state.view.rows[0].ranks == ("S+",)
+    assert "открой в игре Коллекции" in state.note
+
+
+def test_cached_collection_shown_without_token():
+    rig = Rig(cached=(FOREST, {2: "Forest"}, NOW - 600))
+    state = rig.tick(0)
+    assert rig.calls == []
+    assert state.view.rows[0].ranks == ("S+",)
+    assert "коллекция от" in state.note
+
+
+def test_successful_fetch_is_saved(rig):
+    rig.tick(0, TokenSeen("tok", NOW + 3600))
+    player, names, when = rig.saved[-1]
+    assert player == FOREST and names == {2: "Forest"} and when == NOW

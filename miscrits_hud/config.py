@@ -5,6 +5,8 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .game_api import Player
+
 
 def game_data_dir() -> Path:
     return Path(os.environ["APPDATA"]) / "Godot" / "app_userdata" / "Miscrits"
@@ -34,3 +36,20 @@ def load_config(path) -> Config:
 def save_config(path, cfg: Config) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f)
+
+
+def save_cache(path, player: Player, names: dict, when: float) -> None:
+    """Последняя полученная коллекция — чтобы пережить истечение ключа сессии. Ключ не пишется."""
+    data = {"player": asdict(player), "names": {str(k): v for k, v in names.items()}, "time": when}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def load_cache(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        names = {int(k): str(v) for k, v in data["names"].items()}
+        return Player(**data["player"]), names, float(data["time"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
