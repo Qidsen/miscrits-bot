@@ -2,7 +2,7 @@
 
 from ctypes import wintypes
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -22,6 +22,13 @@ ELEMENT_COLORS = {
 def _element_color(element: str) -> str:
     # Гибридные стихии вроде "FireWind" красим по первой.
     return next((color for name, color in ELEMENT_COLORS.items() if element.startswith(name)), "#666666")
+
+
+def clamp_position(pos: QPoint, size, available) -> QPoint:
+    """Держит панель внутри рабочей области экрана (без панели задач)."""
+    x = max(available.left(), min(pos.x(), available.right() + 1 - size.width()))
+    y = max(available.top(), min(pos.y(), available.bottom() + 1 - size.height()))
+    return QPoint(x, y)
 
 
 def _ranks_html(ranks) -> str:
@@ -65,7 +72,7 @@ class OverlayWindow(QWidget):
     moved = Signal()
 
     def __init__(self, icon_lookup):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        super().__init__(None, Qt.FramelessWindowHint | Qt.Tool)  # «поверх» включает app только над игрой
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFixedWidth(WIDTH)
@@ -73,6 +80,7 @@ class OverlayWindow(QWidget):
         self._state = None
         self._move_mode = False
         self._drag_from = None
+        self._anchor = None  # где пользователь поставил панель; при росте вниз сдвигаемся вверх
 
         self._panel = QWidget(self)
         self._panel.setObjectName("panel")
@@ -83,6 +91,16 @@ class OverlayWindow(QWidget):
         self._layout.setContentsMargins(10, 8, 10, 8)
         self._layout.setSpacing(4)
         self._apply_style()
+
+    def place(self, pos: QPoint):
+        self._anchor = QPoint(pos)
+        self._apply_position()
+
+    def _apply_position(self):
+        screen = self.screen()
+        if self._anchor is None or screen is None:
+            return
+        self.move(clamp_position(self._anchor, self.size(), screen.availableGeometry()))
 
     @property
     def move_mode(self) -> bool:
@@ -122,7 +140,11 @@ class OverlayWindow(QWidget):
             note = QLabel(f"<span style='color:#ffd166'>{state.note}</span>")
             note.setWordWrap(True)
             self._layout.addWidget(note)
+        # Qt пересчитывает раскладку отложенно — без этого окно не уменьшается, когда строк стало меньше.
+        self._layout.activate()
+        self.layout().activate()
         self.adjustSize()
+        self._apply_position()
 
     def _row_widget(self, row) -> QWidget:
         widget = QWidget()
@@ -147,6 +169,7 @@ class OverlayWindow(QWidget):
         self.setCursor(Qt.SizeAllCursor if on else Qt.ArrowCursor)
         self._apply_style()
         if not on:
+            self.place(self.pos())
             self.moved.emit()
 
     def mousePressEvent(self, event):
