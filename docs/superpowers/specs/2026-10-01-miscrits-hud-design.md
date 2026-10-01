@@ -19,7 +19,7 @@
 | Что | Откуда |
 |---|---|
 | Справочник видов | `image_cache/miscrits.json` — 425 видов: `id`, `names` (4 формы эволюции), `rarity`, `element`, `locations` в формате `{"<Локация>": {"<зона>": [...]}}` (17 видов без локаций — не дикие) |
-| Иконки | `image_cache/miscrits/<sha256-подобный хэш>` — PNG 50×50 с 12-байтным заголовком Godot (`u32 размер, u32 тип 0x1d, u32 длина`), затем PNG. Схема «хэш → вид» пока не найдена |
+| Иконки | Публичный CDN: `https://cdn.worldofmiscrits.com/avatars/<slug>_avatar.png`, где `slug = имя.lower()` с заменой пробелов на `_` (шаблон взят из официальной Miscripedia на сайте игры). Локальный кэш игры: `image_cache/miscrits/<sha256(этот URL)>` — PNG с 12-байтным заголовком Godot (`u32 размер, u32 тип 0x1d, u32 длина`), затем PNG. Проверено: 404 из 408 файлов совпадают |
 | Смена зоны | `logs/godot.log`, строка `id: update_location, payload: {"areaId":A,"locationId":L}` |
 | Ключ сессии | `logs/godot.log`, заголовок `"Authorization": "Bearer <JWT>"`; поле `exp` в JWT, живёт около 1 часа |
 | Коллекция и текущая зона | `POST https://worldofmiscrits.com/v2/rpc/get_player`, тело `""`, заголовки `Authorization: Bearer <JWT>`, `User-Agent: GodotEngine/4.6.stable (Windows)` (без этого UA Cloudflare/nginx отвечает 403) |
@@ -49,7 +49,8 @@ Python 3.13, PySide6. Пакет `miscrits_hud/`, у каждого модуля
 | `rank.py` | Сумма бросков → ранг | `rank_of(miscrit: dict) -> str`, `RANK_ORDER` |
 | `log_watcher.py` | Хвост `godot.log`: события и ключ | `parse_line(line) -> Event \| None`; класс `LogWatcher` (поллинг раз в 0.5 с) отдаёт `LocationChanged(location_id, area_id)`, `TokenSeen(token, exp)`, `Activity`; при уменьшении размера файла или смене его ctime перечитывает с начала (перезапуск игры) |
 | `game_api.py` | Запрос `get_player`, разбор двойного JSON | `fetch_player(token) -> Player(area_name, area_id, miscrits)`; ошибки `AuthError` (401/403), `NetworkError` |
-| `catalog.py` | Справочник и иконки | `Catalog.load(path)`, `species_in(location_name, area_id) -> list[Species]` в порядке справочника, `icon(species_id) -> QPixmap \| None`; перезагрузка при изменении mtime файла |
+| `catalog.py` | Справочник | `Catalog.load(path)`, `species_in(location_name, area_id) -> list[Species]` в порядке справочника; перезагрузка при изменении mtime файла |
+| `icons.py` | Байты PNG иконки по имени формы | `icon_bytes(name) -> bytes \| None`: 1) кэш игры `sha256(url)` со снятым заголовком; 2) свой кэш `%APPDATA%\miscrits-hud\icons\<slug>.png`; 3) фоновая загрузка с CDN (User-Agent как у браузера, таймаут 10 с) и запись в свой кэш. Неудача запоминается до перезапуска, повторно не качается |
 | `model.py` | Сборка картины зоны | `build_view(catalog, player) -> ZoneView(title, caught_count, total, rows[Row(species, ranks_sorted)])` — чистая функция без Qt |
 | `overlay.py` | Окно Qt | Прозрачное, frameless, always-on-top, tool-window, click-through через `WS_EX_TRANSPARENT \| WS_EX_LAYERED` (ctypes) |
 | `hotkeys.py` | Глобальные клавиши | Win32 `RegisterHotKey` через ctypes + нативный фильтр событий Qt |
@@ -90,21 +91,14 @@ Python 3.13, PySide6. Пакет `miscrits_hud/`, у каждого модуля
 
 Программа пишет свой лог в `%APPDATA%\miscrits-hud\hud.log` (без ключей).
 
-## Открытый вопрос: соответствие иконок видам
-
-Имена файлов иконок — хэши, схему подобрать пока не удалось: перебор sha256/md5/sha1 от имени и типичных URL ничего не дал. Первая задача плана — короткое исследование:
-1. найти в скриптах игры (pck внутри exe), как строится ключ кэша;
-2. если не выйдет — разовое сопоставление по признакам или загрузка иконок по имени с вики игры в локальный кэш.
-
-До решения работает запасной вариант с цветным квадратом. На остальную архитектуру это не влияет.
-
 ## Тестирование
 
 pytest, без сети и без Qt, где это возможно:
 - `rank`: все суммы 6..18, включая подтверждённые примеры пользователя;
 - `log_watcher.parse_line`: реальные строки лога (ключ заменён на фейковый JWT), мусорные строки, ротация файла;
 - `game_api`: разбор сохранённого анонимизированного ответа, маппинг HTTP-кодов в ошибки (мок транспорта);
-- `catalog`: фильтр по локации и зоне на урезанном `miscrits.json`, снятие заголовка с PNG;
+- `catalog`: фильтр по локации и зоне на урезанном `miscrits.json`;
+- `icons`: slug и URL (`"Dark Sparkupine"` → `dark_sparkupine`), sha256-имя файла, снятие заголовка Godot, порядок источников (CDN замокан);
 - `model.build_view`: пойманные, непойманные, сортировка и усечение рангов.
 
 Оверлей и горячие клавиши проверяются вручную на запущенной игре.
