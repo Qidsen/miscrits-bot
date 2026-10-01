@@ -173,7 +173,7 @@ def test_expired_token_keeps_collection_and_follows_log(rig):
     state = rig.tick(1, LocationChanged(2, 1))
     assert state.view.location_name == "Forest"
     assert state.view.rows[0].ranks == ("S+",)
-    assert "открой в игре Коллекции" in state.note
+    assert "открой в игре Достижения и проведи бой" in state.note
 
 
 def test_cached_collection_shown_without_token():
@@ -211,8 +211,8 @@ def test_inflight_response_does_not_override_newer_log_zone():
 
 
 def test_unknown_zone_points_to_collections():
-    assert "Коллекции" in UNKNOWN_ZONE
-    assert "Коллекции" in EXPIRED
+    assert "Достижения и проведи бой" in UNKNOWN_ZONE
+    assert "Достижения и проведи бой" in EXPIRED
 
 
 def test_new_utc_day_rebuilds_view():
