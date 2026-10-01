@@ -4,7 +4,9 @@
 
 ## Запуск
 
-Просто запустите `dist\MiscritsHUD.exe` (игру можно запускать до или после).
+Скачайте `MiscritsHUD.exe` со страницы [Releases](https://github.com/Qidsen/miscrits-hud/releases/latest) и запустите (игру можно запускать до или после). Установка и Python не нужны.
+
+Windows SmartScreen может предупредить о неизвестном издателе: «Подробнее» → «Выполнить в любом случае».
 
 Сборка exe из исходников:
 
