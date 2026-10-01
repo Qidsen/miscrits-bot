@@ -5,8 +5,9 @@ import queue
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QLockFile, Qt, QTimer
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import hotkeys
 from .catalog import CatalogCache
@@ -21,6 +22,27 @@ HK_TOGGLE, HK_REFRESH, HK_MOVE = 1, 2, 3
 TICK_MS = 500
 
 
+def acquire_single_instance(directory):
+    """Вторая копия HUD дала бы второй оверлей без горячих клавиш — не запускаемся."""
+    lock = QLockFile(str(directory / "hud.lock"))
+    return lock if lock.tryLock(0) else None
+
+
+def _tray_icon() -> QIcon:
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(QColor("#ffd166"))
+    painter.setPen(Qt.NoPen)
+    painter.drawRoundedRect(pixmap.rect(), 6, 6)
+    painter.setPen(QColor("#12141c"))
+    painter.setFont(QFont("Segoe UI", 16, QFont.Bold))
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, "M")
+    painter.end()
+    return QIcon(pixmap)
+
+
 def main() -> int:
     home = app_dir()
     logging.basicConfig(
@@ -29,6 +51,10 @@ def main() -> int:
     )
     game = game_data_dir()
     app = QApplication(sys.argv)
+    instance_lock = acquire_single_instance(home)
+    if instance_lock is None:
+        logging.info("another HUD is already running; exiting")
+        return 0
     pool = ThreadPoolExecutor(max_workers=2)
 
     icons = IconStore(game / "image_cache" / "miscrits", home / "icons")
@@ -74,6 +100,21 @@ def main() -> int:
             window.set_move_mode(not window.move_mode)
 
     window.hotkey_pressed.connect(on_hotkey)
+
+    tray = QSystemTrayIcon(_tray_icon())
+    tray.setToolTip("Miscrits HUD")
+    menu = QMenu()
+    for title, hotkey_id in (("Показать/скрыть (F8)", HK_TOGGLE), ("Обновить (F9)", HK_REFRESH),
+                             ("Переместить (Ctrl+F8)", HK_MOVE)):
+        action = QAction(title, menu)
+        action.triggered.connect(lambda _=False, h=hotkey_id: on_hotkey(h))
+        menu.addAction(action)
+    menu.addSeparator()
+    quit_action = QAction("Выход", menu)
+    quit_action.triggered.connect(app.quit)
+    menu.addAction(quit_action)
+    tray.setContextMenu(menu)
+    tray.show()
     window.moved.connect(save_position)
 
     window.show()
