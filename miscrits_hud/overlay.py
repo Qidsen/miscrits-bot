@@ -146,11 +146,19 @@ class OverlayWindow(QWidget):
             note = QLabel(f"<span style='color:#ffd166'>{state.note}</span>")
             note.setWordWrap(True)
             self._layout.addWidget(note)
+        self._fit()
+
+    def _fit(self):
         # Qt пересчитывает раскладку отложенно — без этого окно не уменьшается, когда строк стало меньше.
         self._layout.activate()
         self.layout().activate()
         self.adjustSize()
         self._apply_position()
+
+    def showEvent(self, event):
+        # Строки, добавленные пока окно было спрятано, Qt считал пустыми — пересчитываем размер при показе.
+        super().showEvent(event)
+        self._fit()
 
     def _row_widget(self, row) -> QWidget:
         widget = QWidget()

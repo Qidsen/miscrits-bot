@@ -49,6 +49,7 @@ def _tray_icon() -> QIcon:
 
 def main() -> int:
     home = app_dir()
+    sys.excepthook = lambda *exc: logging.critical("unhandled exception", exc_info=exc)
     logging.basicConfig(
         filename=home / "hud.log", level=logging.INFO, encoding="utf-8",
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -149,6 +150,13 @@ def main() -> int:
             hotkeys.set_topmost(hwnd, mode == "top")
 
     def tick():
+        try:
+            _tick()
+        except Exception:
+            # exe без консоли: без этого ошибка пропадает молча, а окно остаётся пустым
+            logging.exception("tick failed")
+
+    def _tick():
         update_placement()
         state = controller.tick()
         if state is not None:
