@@ -14,7 +14,10 @@ class Species:
     names: tuple
     element: str
     rarity: str
-    locations: dict  # {"Forest": {"1": [...], "2": [...]}}
+    locations: dict  # {"Forest": {"1": [дни], "2": []}}; дни 0..6, 0 = воскресенье; [] — каждый день
+
+    def days(self, location_name: str, area_id: int) -> tuple:
+        return tuple(self.locations.get(location_name, {}).get(str(area_id)) or ())
 
 
 class Catalog:

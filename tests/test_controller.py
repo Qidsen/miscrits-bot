@@ -17,6 +17,7 @@ FOREST = Player("Forest", 1, [{"m": 1, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "
 
 class Rig:
     def __init__(self, cached=None):
+        self.weekday = 4
         self.deferred = False
         self.pending = []
         self.saved = []
@@ -28,6 +29,7 @@ class Rig:
             watcher=self, catalogs=lambda: CATALOG, fetch=self.fetch, submit=self.submit,
             clock=lambda: self.t, wall=lambda: NOW + self.t,
             cached=cached, on_update=lambda *args: self.saved.append(args),
+            weekday=lambda: self.weekday,
         )
 
     def poll(self):
@@ -211,3 +213,16 @@ def test_inflight_response_does_not_override_newer_log_zone():
 def test_unknown_zone_points_to_collections():
     assert "Коллекции" in UNKNOWN_ZONE
     assert "Коллекции" in EXPIRED
+
+
+def test_new_utc_day_rebuilds_view():
+    catalog = Catalog.from_json(json.dumps([
+        {"id": 1, "element": "Fire", "names": ["Flue", "b", "c", "d"], "rarity": "Common", "locations": {"Forest": {"1": [4]}}},
+    ]))
+    rig = Rig()
+    rig.c._catalogs = lambda: catalog
+    state = rig.tick(0, TokenSeen("tok", NOW + 3600))
+    assert [r.name for r in state.view.today_rows] == ["Flue"]
+    rig.weekday = 5  # наступила пятница по UTC
+    state = rig.tick(0.5)
+    assert state is not None and [r.name for r in state.view.other_rows] == ["Flue"]

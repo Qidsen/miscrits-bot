@@ -77,3 +77,16 @@ def test_panel_returns_to_anchor_when_it_shrinks(qapp):
     assert window.y() + window.height() - 1 <= bottom
     window.render(UiState(ZoneView("Forest", 1, (Row(1, "Flue", "Fire", "Common", ()),)), None, None))
     assert window.y() == bottom - 200
+
+
+def test_renders_other_days_block(qapp):
+    window = OverlayWindow(icon_lookup=lambda name: None)
+    view = ZoneView("Forest", 1, (
+        Row(1, "Everyday", "Fire", "Common", ("A",)),
+        Row(2, "Weekend", "Water", "Epic", (), days=(6, 0), today=False),
+    ))
+    window.render(UiState(view, None, None))
+    all_text = " ".join(texts(window))
+    assert "1/1 сегодня" in all_text
+    assert "В другие дни" in all_text
+    assert "сб · вс" in all_text
