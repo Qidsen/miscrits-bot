@@ -82,14 +82,27 @@ def test_unchanged_state_returns_none(rig):
     assert rig.tick(0.5) is None
 
 
-def test_activity_refreshes_every_20s(rig):
-    rig.tick(0, TokenSeen("tok", NOW + 3600))
-    rig.tick(10, Activity())
-    assert len(rig.calls) == 1
+def test_polls_server_every_15s_while_game_active(rig):
+    # Лог игры пишется блоками по 4 КБ, поэтому зону спрашиваем у сервера сами, не ожидая лога.
+    rig.tick(0, TokenSeen("tok", NOW + 3600), Activity())
     rig.tick(10)
+    assert len(rig.calls) == 1
+    rig.tick(5)
     assert len(rig.calls) == 2
-    rig.tick(30)
-    assert len(rig.calls) == 2  # без новой активности не дёргаем сервер
+    rig.tick(15)
+    assert len(rig.calls) == 3
+
+
+def test_stops_polling_when_log_idle_10_min(rig):
+    rig.tick(0, TokenSeen("tok", NOW + 3000), Activity())
+    for _ in range(40):  # 10 минут без роста лога
+        rig.tick(15)
+    calls = len(rig.calls)
+    rig.tick(15)
+    rig.tick(15)
+    assert len(rig.calls) == calls
+    rig.tick(1, Activity())
+    assert len(rig.calls) == calls + 1
 
 
 def test_location_change_refreshes_immediately(rig):

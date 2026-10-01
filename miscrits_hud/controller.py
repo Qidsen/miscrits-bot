@@ -24,7 +24,8 @@ class UiState:
 
 
 class Controller:
-    REFRESH_INTERVAL = 20.0
+    POLL_INTERVAL = 15.0
+    IDLE_LIMIT = 600.0  # лог не растёт 10 минут — игра закрыта или стоит в меню
     MIN_INTERVAL = 5.0
     TOKEN_MARGIN = 30.0
 
@@ -42,7 +43,8 @@ class Controller:
         self._token = None
         self._exp = 0.0
         self._blocked_token = None
-        self._force = self._dirty = self._manual = False
+        self._force = self._manual = False
+        self._last_activity = None
         self._future = None
         self._inflight_token = None
         self._last_start = None
@@ -75,7 +77,7 @@ class Controller:
             self._location = (event.location_id, event.area_id)
             self._force = True
         elif isinstance(event, Activity):
-            self._dirty = True
+            self._last_activity = self._clock()
 
     def _token_valid(self) -> bool:
         return (
@@ -92,14 +94,19 @@ class Controller:
             self._force
             or (self._last_ok is None and since >= self.MIN_INTERVAL)
             or (self._manual and since >= self.MIN_INTERVAL)
-            or (self._dirty and since >= self.REFRESH_INTERVAL)
+            or (since >= self.POLL_INTERVAL and self._game_active())
         )
         if not due:
             return
-        self._force = self._dirty = self._manual = False
+        self._force = self._manual = False
         self._last_start = self._clock()
         self._inflight_token = self._token
         self._future = self._submit(self._fetch, self._token)
+
+    def _game_active(self) -> bool:
+        # Игра пишет лог блоками по 4 КБ, поэтому зону и коллекцию опрашиваем сами,
+        # пока лог хоть иногда растёт.
+        return self._last_activity is not None and self._clock() - self._last_activity <= self.IDLE_LIMIT
 
     def _collect(self):
         if self._future is None or not self._future.done():
