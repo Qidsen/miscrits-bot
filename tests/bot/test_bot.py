@@ -371,3 +371,15 @@ def test_switches_to_crit_with_safe_hit_when_catching(tmp_path):
     bot._switch = lambda slot: switches.append(slot)
     bot._battle()
     assert switches == ["team_1"]
+
+
+def test_finishing_blow_is_recorded_as_lower_bound(tmp_path):
+    turn = {"see": {"battle", "my_turn"}, "enemy_hp": (40, 50), "my_hp": (100, 100)}
+    won = {"see": {"battle_won"}}
+    eyes = FakeEyes([turn, turn, turn, won, won, {"see": set()}])
+    owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
+    bot, _ = make_bot(eyes, tmp_path, owned)
+    bot.settings.explore_damage = False
+    bot._battle()
+    [hit] = bot.hits.hits
+    assert hit.kill and hit.damage == 40 and hit.enemy == "Flue"

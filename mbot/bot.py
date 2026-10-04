@@ -560,6 +560,13 @@ class Bot:
             if turn == "battle_won":
                 if decision is not None and decision.action == CAPTURE and last is not None:
                     self._killed_while_catching(enemy, rank, last)
+                elif last is not None and self._last_max_hp:
+                    # бой кончился нашим ударом — следующего хода нет, точный урон не увидеть: записываем
+                    # «не меньше HP, что было у цели», иначе удары, которые убивают сразу, в журнал не попадали бы
+                    attacker, move, hp_before = last
+                    self.hits.record(attacker, self.hits.attacker_level, move, enemy.names[0] if enemy else "?",
+                                     enemy.element if enemy else "", self.hits.level, self._last_max_hp, hp_before,
+                                     rank, kill=True)
                 self._train_seen = self._summary_says_train()
                 break
             self._sleep(0.4)  # анимации панели HP
