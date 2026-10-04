@@ -9,11 +9,13 @@ import time
 from dataclasses import dataclass, field
 
 import cv2
+import numpy as np
 
 from .brain.capture import CAPTURE, decide
 from .brain.combat import ATTACK, STALL, DamageModel, choose_capture, choose_kill, moves_from_catalog
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
+from .screen import crop as crop_area
 from .screen import find
 from .storage import ABILITY_SLOTS, POPUPS
 from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
@@ -27,6 +29,8 @@ CLICK_HALF = 14
 MISS_RETRIES = 2
 MAX_TRAININGS = 4  # критов в команде
 BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
+SUMMARY_MAX_WAIT = 2.0  # с: дольше анимация опыта в сводке не идёт
+SUMMARY_STILL = 12  # изменившихся пикселей (в уменьшенном кадре), меньше которых сводка неподвижна
 
 
 def ready_label_of(row):
@@ -706,14 +710,34 @@ class Bot:
         label = self._train_label()
         if label is None:
             return None
-        end = time.monotonic() + 1.5  # полоски опыта в сводке заполняются с анимацией
+        # Опыт в сводке «капает» с анимацией, и крит может стать готовым прямо в ней. Ждём не фиксированное
+        # время, а пока сводка перестанет меняться: без анимации это мгновенно, с ней — сколько она идёт.
+        threshold = max(self.eyes.threshold, 0.8)
+        area = self._summary_area()
+        previous = None
+        end = time.monotonic() + SUMMARY_MAX_WAIT
         while True:
             self.eyes.look()
-            if find(self.eyes.image, label, max(self.eyes.threshold, 0.8)) is not None:
+            if find(self.eyes.image, label, threshold) is not None:
                 return True
+            current = cv2.resize(crop_area(self.eyes.image, area), None, fx=0.25, fy=0.25,
+                                 interpolation=cv2.INTER_AREA).astype(np.int16)
+            # анимируется маленькая полоска опыта — считаем изменившиеся пиксели, а не среднюю разницу
+            if previous is not None and int((np.abs(current - previous).max(axis=2) > 30).sum()) < SUMMARY_STILL:
+                return False
             if time.monotonic() >= end:
                 return False
-            time.sleep(0.2)
+            previous = current
+            time.sleep(0.15)
+
+    def _summary_area(self):
+        """Где на экране сводка: вокруг обученной полосы READY TO TRAIN и кнопки Continue."""
+        rects = [self.eyes.teaching.elements[k].rect for k in ("train_ready", "battle_won") if k in self.eyes.teaching.elements]
+        x0 = min(r[0] for r in rects) - 500
+        y0 = min(r[1] for r in rects) - 400
+        x1 = max(r[0] + r[2] for r in rects) + 500
+        y1 = max(r[1] + r[3] for r in rects) + 100
+        return max(x0, 0), max(y0, 0), x1 - max(x0, 0), y1 - max(y0, 0)
 
     def _train_label(self):
         snap = self.eyes.teaching.elements.get("train_ready")

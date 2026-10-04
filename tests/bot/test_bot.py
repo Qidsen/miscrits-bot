@@ -259,3 +259,37 @@ def test_battle_summary_decides_training(tmp_path):
     bot._train_seen = True
     assert bot._should_train() is True
     assert bot._train_seen is None  # ответ сводки используется один раз
+
+
+def test_summary_waits_only_while_xp_animates(tmp_path, monkeypatch):
+    import numpy as np
+
+    import mbot.bot
+    monkeypatch.setattr(mbot.bot, "SUMMARY_MAX_WAIT", 100)  # часы в тестах прыгают на секунду за вызов
+
+    label_band = np.zeros((110, 110, 3), np.uint8)
+    label_band[45:72, 5:105] = 255
+    label_band[50:66, 10:100:7] = 0  # узор «READY TO TRAIN»
+    eyes = FakeEyes([{"see": set()}])
+    eyes.threshold = 0.82
+    eyes.teaching.elements["train_ready"] = Snapshot((300, 300, 110, 110), label_band)
+    eyes.teaching.elements["battle_won"] = Snapshot((350, 500, 110, 110))
+    rng = np.random.default_rng(0)
+    still = rng.integers(0, 60, (900, 1200, 3), dtype=np.uint8)
+    frames = []
+
+    def look():
+        eyes.image = frames.pop(0) if len(frames) > 1 else frames[0]
+    eyes.look = look
+    bot, _ = make_bot(eyes, tmp_path)
+
+    frames[:] = [still.copy(), still.copy(), still.copy()]  # ничего не меняется и метки нет
+    assert bot._summary_says_train() is False
+
+    animated = [still.copy() for _ in range(4)]
+    for i, frame in enumerate(animated):
+        frame[600:620, 100:100 + 80 * (i + 1)] = 250  # полоска опыта растёт
+    ready = animated[-1].copy()
+    ready[700:727, 400:510] = label_band[45:72]  # в конце анимации появилась метка
+    frames[:] = animated + [ready]
+    assert bot._summary_says_train() is True
