@@ -99,10 +99,98 @@ class Ocr:
         if whitelist:
             config += f" -c tessedit_char_whitelist={whitelist}"
         out = []
+        outlined = white_text(image)
+        if outlined is not None:
+            out.append(self._tess.image_to_string(outlined, config=config).strip())
         for variant in (binary, 255 - binary):
             padded = cv2.copyMakeBorder(variant, 20, 20, 20, 20, cv2.BORDER_REPLICATE)
             out.append(self._tess.image_to_string(padded, config=config).strip())
         return out
+
+    def rank(self, image: np.ndarray) -> str | None:
+        """Ранг со значка в бою: цветная буква с тёмной обводкой и отдельный «+»."""
+        parts = rank_glyph(image)
+        if parts is None:
+            return parse_rank(self.text(image))
+        letter, plus = parts
+        padded = cv2.copyMakeBorder(letter, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
+        for psm in (10, 7, 8):
+            text = self._tess.image_to_string(padded, config=f"--psm {psm} -c tessedit_char_whitelist=SABCDF").strip()
+            if text[:1] in "SABCDF" and text:
+                return text[0] + ("+" if plus else "")
+        return None
+
+
+def white_text(image: np.ndarray, scale: int = 4):
+    """Белые буквы с тёмной обводкой (HP, кнопки способностей) → чёрный текст на белом, или None.
+    Фон и иконки отбрасываются: берётся самая многочисленная строка фигур похожего размера."""
+    big = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
+    white = ((hsv[:, :, 1] < 70) & (hsv[:, :, 2] > 185)).astype(np.uint8)
+    height, width = white.shape
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(white)
+    shapes = []
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if h < 0.15 * height or w > 0.5 * width or area < 30:
+            continue
+        if (x == 0 and x + w >= width) or (y == 0 and y + h >= height):
+            continue  # полоса фона через всю область
+        shapes.append(i)
+    if not shapes:
+        return None
+    shapes.sort(key=lambda i: stats[i, cv2.CC_STAT_LEFT])
+    groups, current = [], [shapes[0]]
+    for i in shapes[1:]:
+        prev = current[-1]
+        gap = stats[i, cv2.CC_STAT_LEFT] - (stats[prev, cv2.CC_STAT_LEFT] + stats[prev, cv2.CC_STAT_WIDTH])
+        if gap < max(stats[i, cv2.CC_STAT_HEIGHT], stats[prev, cv2.CC_STAT_HEIGHT]) * 0.9:
+            current.append(i)
+        else:
+            groups.append(current)
+            current = [i]
+    groups.append(current)
+    text = max(groups, key=lambda g: (len(g), sum(stats[i, cv2.CC_STAT_AREA] for i in g)))
+    mask = np.isin(labels, text)
+    ys, xs = np.where(mask)
+    out = np.where(mask, 0, 255).astype(np.uint8)[max(ys.min() - 10, 0):ys.max() + 10, max(xs.min() - 10, 0):xs.max() + 10]
+    return cv2.copyMakeBorder(out, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=255)
+
+
+def _flood_outside(free: np.ndarray) -> np.ndarray:
+    """Пиксели free (255), достижимые от края картинки, помечаются 128."""
+    h, w = free.shape
+    mask = np.zeros((h + 2, w + 2), np.uint8)
+    edges = [(x, y) for x in range(w) for y in (0, h - 1)] + [(x, y) for y in range(h) for x in (0, w - 1)]
+    for x, y in edges:
+        if free[y, x] == 255:
+            cv2.floodFill(free, mask, (x, y), 128)
+    return free
+
+
+def rank_glyph(image: np.ndarray, scale: int = 6):
+    """(картинка буквы чёрным по белому, есть ли «+») или None.
+    Значок ранга — заливка внутри тёмной обводки, поэтому берём всё, что обводкой отрезано от краёв."""
+    big = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
+    outline = (hsv[:, :, 2] < 120) & (hsv[:, :, 1] > 70)
+    free = np.where(outline, 0, 255).astype(np.uint8)
+    inside = (_flood_outside(free) == 255).astype(np.uint8)
+    inside = cv2.morphologyEx(inside, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(inside)
+    blobs = sorted(range(1, count), key=lambda i: -stats[i, cv2.CC_STAT_AREA])
+    if not blobs or stats[blobs[0], cv2.CC_STAT_AREA] < big.shape[0] * big.shape[1] * 0.05:
+        return None
+    letter_id = blobs[0]
+    lx, ly, lw, lh, larea = stats[letter_id]
+    plus = False
+    for i in blobs[1:]:
+        x, y, w, h, area = stats[i]
+        # «+»: заметная фигура правее середины буквы, почти квадратная, заполнена примерно наполовину
+        if area >= larea * 0.08 and x > lx + lw / 2 and 0.6 < w / h < 1.6 and 0.35 < area / (w * h) < 0.75:
+            plus = True
+    letter = np.where(labels == letter_id, 0, 255).astype(np.uint8)[ly:ly + lh, lx:lx + lw]
+    return letter, plus
 
 
 def parse_hp(texts) -> tuple | None:

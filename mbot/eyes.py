@@ -1,6 +1,6 @@
 """Что бот видит: обученные элементы на текущем скриншоте и прочитанные с них значения."""
 
-from .screen import best_name, crop, find, grab, parse_hp, parse_percent, parse_rank
+from .screen import best_name, crop, find, grab, parse_hp, parse_percent
 
 SPOT_THRESHOLD = 0.7  # точки поиска — куски пейзажа, им можно чуть меньше точности
 
@@ -47,7 +47,10 @@ class Eyes:
         return parse_percent(self._texts(element_id, "0123456789%"))
 
     def read_rank(self, element_id: str):
-        return parse_rank(self._texts(element_id))
+        rect = self.region(element_id)
+        if rect is None or self.ocr is None:
+            return None
+        return self.ocr.rank(crop(self.image, rect))
 
     def read_name(self, element_id: str, names):
         return best_name(self._texts(element_id), names)

@@ -44,3 +44,42 @@ def test_best_name_is_fuzzy():
     assert best_name(["Lavari11a"], names) == "Lavarilla"
     assert best_name(["dark lavarila"], names) == "Dark Lavarilla"
     assert best_name(["zzz"], names) is None
+
+
+def test_rank_badge_from_game():
+    from pathlib import Path
+
+    import cv2
+
+    from mbot.screen import Ocr, rank_glyph
+
+    image = cv2.imread(str(Path(__file__).parent / "data" / "rank_c_plus.png"))
+    letter, plus = rank_glyph(image)
+    assert plus and letter.shape[0] > 50
+    ocr = Ocr(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if ocr.available():
+        assert ocr.rank(image) == "C+"
+
+
+def test_outlined_white_text_from_game():
+    from pathlib import Path
+
+    import cv2
+
+    from mbot.screen import Ocr
+
+    ocr = Ocr(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if not ocr.available():
+        return
+    data = Path(__file__).parent / "data"
+
+    def read(name, whitelist=None):
+        return ocr.text(cv2.imread(str(data / name)), whitelist)
+
+    assert parse_hp(read("hp_182.png", "0123456789/")) == (182, 182)
+    assert parse_hp(read("hp_71.png", "0123456789/")) == (71, 71)
+    abilities = ["The Big Finale", "Veto", "Hurricane", "Hyper Power", "Mush", "Swipe"]
+    assert best_name(read("ability_big_finale.png"), abilities) == "The Big Finale"
+    assert best_name(read("ability_veto.png"), abilities) == "Veto"
+    assert best_name(read("ability_hurricane.png"), abilities) == "Hurricane"
+    assert best_name(read("ability_hyper_power.png"), abilities) == "Hyper Power"
