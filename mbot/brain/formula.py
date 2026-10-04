@@ -83,6 +83,7 @@ class Calibration:
     n: int
     physical: float = 1.0  # физические атаки — свой масштаб
     multi: float = 1.0  # многоударные (Hurricane ×4…) — поправка: удары промахиваются и слабее полного
+    multi_spread: float = 0.5  # разброс многоударных больше: то пройдут все удары, то половина
 
     def multiplier(self, attack: str, defender: str) -> float:
         strong, weak = matchup(attack, defender)
@@ -121,6 +122,10 @@ def fit(rows) -> Calibration | None:
     multi_rows = [d / (b * cal.factor(m, t)) for b, m, t, d in rows if m.times > 1]
     if len(multi_rows) >= 2:
         cal.multi = _median(multi_rows)
-    errors = sorted(abs(d / (b * cal.factor(m, t)) - 1) for b, m, t, d in rows)
-    cal.spread = errors[min(len(errors) - 1, int(len(errors) * 0.9))]
+    def p90(sel):
+        errors = sorted(abs(d / (b * cal.factor(m, t)) - 1) for b, m, t, d in sel)
+        return errors[min(len(errors) - 1, int(len(errors) * 0.9))] if errors else None
+    cal.spread = p90([r for r in rows if r[1].times == 1]) or p90(rows)
+    multi_spread = p90([r for r in rows if r[1].times > 1])
+    cal.multi_spread = max(multi_spread if multi_spread is not None else 0.5, cal.spread)
     return cal

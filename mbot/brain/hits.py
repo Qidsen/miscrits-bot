@@ -21,6 +21,7 @@ MIN_SIMILAR = 2
 TRUST_SIMILAR = 3  # столько похожих ударов — и журнал важнее формулы
 ATTACKER_LEVEL_STEP = 1
 FORMULA_MIN_MARGIN = 0.25  # худший случай по формуле — минимум +25% к прогнозу
+MULTI_MIN_MARGIN = 0.5  # у многоударных атак — минимум +50%
 
 
 @dataclass(frozen=True)
@@ -160,6 +161,9 @@ class HitBook:
         if pair is None:
             return None
         expected = base_damage(move, *pair) * cal.factor(move, target_element)
+        if move.times > 1:
+            # многоударные: то проходят все удары, то половина — запас отдельный и больше
+            return expected, expected * (1 + max(MULTI_MIN_MARGIN, cal.multi_spread * 1.2))
         return expected, expected * (1 + max(FORMULA_MIN_MARGIN, cal.spread * 1.2))
 
     # ---- прогноз ----
@@ -174,7 +178,7 @@ class HitBook:
         if similar and by_formula is None:
             shares = [h.share for h in similar]
             mean, top = sum(shares) / len(shares), max(shares)
-            margin = 1.15 if len(shares) >= 3 else 1.5
+            margin = (1.3 if move.times > 1 else 1.15) if len(shares) >= 3 else 1.5
             return mean * move.power * max_hp, top * margin * move.power * max_hp, "журнал"
         if by_formula is not None:
             return (*by_formula, "формула")

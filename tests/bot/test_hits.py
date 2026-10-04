@@ -42,3 +42,15 @@ def test_growing_attacker_uses_hits_from_its_current_level():
     assert 29 <= expected <= 32  # подрос — бьёт сильнее, старые удары 10-го уровня не в счёт
     book.attacker_level = 10
     assert 9 <= book.estimate("Spike", BLOW, "Earth", max_hp=80)[0] <= 12
+
+
+def test_multi_hit_worst_case_has_bigger_margin():
+    hurricane = Move("Hurricane", 7, 4, 95, "Wind")
+    book = HitBook(None, DamageModel())
+    for damage in (40, 40, 40):
+        book.record("Patriot", 35, BLOW, "X", "Fire", 15, 80, damage)
+        book.record("Patriot", 35, hurricane, "X", "Water", 15, 80, damage)
+    book.level, book.attacker_level = 15, 35
+    _, single_worst = book.estimate("Patriot", BLOW, "Fire", max_hp=80)
+    _, multi_worst = book.estimate("Patriot", hurricane, "Water", max_hp=80)
+    assert round(single_worst) == 46 and round(multi_worst) == 52  # 40 × 1.15 и 40 × 1.3
