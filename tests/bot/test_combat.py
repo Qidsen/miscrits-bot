@@ -103,3 +103,20 @@ def test_untried_element_pair_uses_multiplier():
     assert m.estimate("Me", fire, "Water")[0] == 10.0
     kill = choose_kill([fire, Move("Splash", 10, 1, 100, "Water")], m, "Me", "Fire")
     assert kill.name == "Splash"
+
+
+def test_weak_enemy_learned_by_hp_share():
+    """Тот же удар по слабому (мало HP) противнику снимает большую долю — модель в долях это учитывает."""
+    m = DamageModel()
+    for _ in range(3):
+        m.observe("Me", HIT, "Fire", 30, max_hp=300)  # сильный противник: 10% HP
+    expected, high = m.estimate("Me", HIT, "Fire", max_hp=80)
+    assert round(expected) == 8 and high < 12  # слабому — тоже ~10%, а не 30 HP
+
+
+def test_capture_keeps_safety_margin():
+    m = trained(HIT=1.0)  # верхняя оценка HIT ≈ 11.5
+    a = choose_capture([HIT], m, "Me", "Fire", hp=15, max_hp=100, chance=10, min_chance=70, can_capture=True)
+    assert a.kind == CAPTURE  # 11.5 > 70% от 15 — бить опасно, ловим
+    a = choose_capture([HIT], m, "Me", "Fire", hp=40, max_hp=100, chance=10, min_chance=70, can_capture=True)
+    assert a.kind == ATTACK

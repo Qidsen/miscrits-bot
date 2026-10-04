@@ -301,7 +301,10 @@ class Bot:
             return
         spots = self.eyes.teaching.spots
         if not spots:
-            raise Stuck("нет точек поиска: целей охоты нет в этой зоне на карте сайта, а вручную точки не размечены")
+            # целей нет (или все пойманы), а вручную точки не размечены — фармим опыт на всех точках зоны с карты сайта
+            if self._map_hunt(farm=True):
+                return
+            raise Stuck("нет точек поиска: ни целей, ни размеченных точек, ни карты этой зоны на сайте")
         # Кулдаун точки идёт с момента клика по ней, бой входит в это время — считаем его сами.
         cooldown = self.settings.spot_cooldown + 1
         now = time.monotonic()
@@ -364,23 +367,25 @@ class Bot:
             self._emit("targets_done", None)
         return targets
 
-    def _map_targets(self):
-        """(локация, маркеры целей в текущей зоне) или None, если охотиться по карте нельзя."""
-        if not self.settings.hunt_targets or self._companion is None or self._location_fn is None:
+    def _map_targets(self, farm=False):
+        """(локация, маркеры целей в текущей зоне) или None, если охотиться по карте нельзя.
+        farm — все точки зоны с карты сайта (фарм опыта, когда целей нет)."""
+        if self._companion is None or self._location_fn is None or (not farm and not self.settings.hunt_targets):
             return None
         where = self._location_fn()
         catalog = self._catalog_fn()
         if not where or catalog is None:
             return None
         location, area = where
-        targets = self._open_targets(catalog)
-        if not targets:
+        targets = None if farm else self._open_targets(catalog)
+        if not farm and not targets:
             return None
         by_id = {s.id: s for s in catalog.species}
         markers = []
         for m in self._companion.markers(location):
             species = by_id.get(m.species_id)
-            if m.name in targets and (species is None or species_in_zone(species, location, area)):
+            in_zone = species is None or species_in_zone(species, location, area)
+            if in_zone and (farm or m.name in targets):
                 markers.append(m)
         return (location, markers) if markers else None
 
@@ -473,8 +478,8 @@ class Bot:
             self._sleep(0.3)
         return last
 
-    def _map_hunt(self) -> bool:
-        found = self._map_targets()
+    def _map_hunt(self, farm=False) -> bool:
+        found = self._map_targets(farm)
         if found is None:
             return False
         location, markers = found
@@ -561,7 +566,7 @@ class Bot:
             me = by_name.get(my_name)
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name:
-                self.model.observe(last[0], last[1], target_element, last[2] - hp[0])
+                self.model.observe(last[0], last[1], target_element, last[2] - hp[0], hp[1])
             if me is None:
                 raise Stuck("не распознал своего крита")
             moves, extras = self._known_moves(my_name, me)

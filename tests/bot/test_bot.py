@@ -293,3 +293,23 @@ def test_summary_waits_only_while_xp_animates(tmp_path, monkeypatch):
     ready[700:727, 400:510] = label_band[45:72]  # в конце анимации появилась метка
     frames[:] = animated + [ready]
     assert bot._summary_says_train() is True
+
+
+def test_farm_uses_all_zone_markers_when_no_targets(tmp_path):
+    from miscrits_hud.catalog import Catalog
+    from mbot.worldmap import Marker
+
+    fubby = Species(417, ("Fubby",), "Earth", "Exotic", {"Mansion": {"1": []}})
+    attic = Species(9, ("Batty",), "Wind", "Epic", {"Mansion": {"4": []}})
+    eyes = FakeEyes([{"see": set()}])
+    bot = Bot(eyes, lambda r: None, lambda: Catalog([fubby, attic]), lambda: None, Settings(), tmp_path / "l.json",
+              tmp_path, location_fn=lambda: ("Mansion", 1))
+
+    class Maps:
+        def markers(self, location):
+            return [Marker("Fubby", 417, "Exotic", 27, 3513), Marker("Batty", 9, "Epic", 900, 900)]
+
+    bot._companion = Maps()
+    assert bot._map_targets() is None  # целей нет — охоты по целям нет
+    location, markers = bot._map_targets(farm=True)
+    assert [m.name for m in markers] == ["Fubby"]  # Batty в другой зоне (чердак)

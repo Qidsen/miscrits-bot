@@ -5,7 +5,8 @@ from dataclasses import dataclass
 ATTACK, CAPTURE, STALL = "attack", "capture", "stall"
 DEFAULT_RATIO = 1.5  # урон за единицу ap, пока наблюдений нет
 DEFAULT_HIGH = 4.0
-LOW_HP_RATIO = 0.35  # без OCR шанса поимки ловим, когда у цели осталось столько HP
+LOW_HP_RATIO = 0.35
+SAFETY_MARGIN = 0.3  # при поимке атака не должна (по худшей оценке) снимать больше 70% оставшегося HP  # без OCR шанса поимки ловим, когда у цели осталось столько HP
 
 
 @dataclass(frozen=True)
@@ -73,13 +74,19 @@ class DamageModel:
     def _key(attacker, move, target_element):
         return f"{attacker}|{move.element}|{target_element}"
 
-    def observe(self, attacker: str, move: Move, target_element: str, damage: float) -> None:
+    def observe(self, attacker: str, move: Move, target_element: str, damage: float, max_hp: int | None = None) -> None:
         if damage <= 0 or move.power <= 0:
             return  # промах ничего не говорит о силе удара
         ratio = damage / move.power
         self._add(self._key(attacker, move, target_element), ratio)
         # общая сила атакующего без учёта стихий — чтобы оценивать и непробованные пары стихий
         self._add(f"{attacker}|*", ratio / multiplier(move.element, target_element))
+        if max_hp:
+            # та же сила, но в долях максимального HP цели: так учитывается уровень противника —
+            # у слабого крита и защита, и HP меньше, и один и тот же удар снимает ему куда большую долю
+            share = damage / (move.power * max_hp)
+            self._add("hp|" + self._key(attacker, move, target_element), share)
+            self._add(f"hp|{attacker}|*", share / multiplier(move.element, target_element))
 
     def _add(self, key, ratio):
         stats = self._stats.setdefault(key, [0, 0.0, 0.0])
@@ -87,8 +94,13 @@ class DamageModel:
         stats[1] += ratio
         stats[2] = max(stats[2], ratio)
 
-    def estimate(self, attacker: str, move: Move, target_element: str) -> tuple:
-        """(ожидаемый урон при попадании, осторожная верхняя оценка)."""
+    def estimate(self, attacker: str, move: Move, target_element: str, max_hp: int | None = None) -> tuple:
+        """(ожидаемый урон при попадании, осторожная верхняя оценка). С max_hp цели — по долям её HP,
+        если такие наблюдения уже есть (точнее для противников разного уровня)."""
+        if max_hp:
+            by_share = self._estimate_share(attacker, move, target_element, max_hp)
+            if by_share is not None:
+                return by_share
         stats = self._stats.get(self._key(attacker, move, target_element))
         if stats:
             n, total, top = stats
@@ -99,6 +111,18 @@ class DamageModel:
             n, total, top = overall
             return total / n * m * move.power, top * 1.5 * m * move.power
         return DEFAULT_RATIO * m * move.power, DEFAULT_HIGH * m * move.power
+
+    def _estimate_share(self, attacker, move, target_element, max_hp):
+        stats = self._stats.get("hp|" + self._key(attacker, move, target_element))
+        if stats:
+            n, total, top = stats
+            return total / n * move.power * max_hp, top * (1.15 if n >= 3 else 1.5) * move.power * max_hp
+        overall = self._stats.get(f"hp|{attacker}|*")
+        if overall:
+            n, total, top = overall
+            m = multiplier(move.element, target_element)
+            return total / n * m * move.power * max_hp, top * 1.5 * m * move.power * max_hp
+        return None
 
     def to_json(self) -> dict:
         return {k: list(v) for k, v in self._stats.items()}
@@ -114,7 +138,9 @@ def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, m
             return Action(CAPTURE)
         if chance is None and max_hp and hp / max_hp <= LOW_HP_RATIO:
             return Action(CAPTURE)
-    safe = [m for m in moves if model.estimate(attacker, m, target_element)[1] < hp]
+    # безопасна атака, после которой даже в худшем случае у цели останется заметная часть HP
+    limit = hp * (1 - SAFETY_MARGIN)
+    safe = [m for m in moves if model.estimate(attacker, m, target_element, max_hp)[1] < limit]
     if safe:
-        return Action(ATTACK, max(safe, key=lambda m: model.estimate(attacker, m, target_element)[0]))
+        return Action(ATTACK, max(safe, key=lambda m: model.estimate(attacker, m, target_element, max_hp)[0]))
     return Action(CAPTURE) if can_capture else Action(STALL)
