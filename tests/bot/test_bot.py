@@ -225,7 +225,7 @@ def _train_bot(tmp_path, ready_rows):
     eyes.teaching.routes["train"] = [Step(Snapshot((i, 0, 5, 5), img)) for i in range(5)]
     bot, clicks = make_bot(eyes, tmp_path)
     rows = iter(ready_rows)
-    bot._find_anywhere = lambda image, timeout, threshold=None: (9, 9, 5, 5) if next(rows, False) else None
+    bot._find_anywhere = lambda image, timeout, threshold=None, near=None, clear_popups=False: (9, 9, 5, 5) if next(rows, False) else None
     steps = []
     bot._click_step = lambda step, timeout: steps.append(step.snap.rect[0]) or True
     bot._dismiss_popups_quietly = lambda: None

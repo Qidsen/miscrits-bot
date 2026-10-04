@@ -784,7 +784,7 @@ class Bot:
             return 0
         trained = 0
         for _ in range(MAX_TRAININGS):
-            row = self._find_anywhere(ready_label, timeout=3, threshold=0.75)
+            row = self._find_anywhere(ready_label, timeout=3, threshold=0.75, clear_popups=True)
             if row is None:
                 break
             self._press(row, "READY")
@@ -799,14 +799,21 @@ class Bot:
         self._sleep(0.8)
         return trained
 
-    def _find_anywhere(self, image, timeout, threshold=None, near=None):
+    def _find_anywhere(self, image, timeout, threshold=None, near=None, clear_popups=False):
         """Ищет картинку: сначала рядом с местом, где её показали при обучении (миллисекунды),
-        потом по всему экрану (около 0,4 с на двух мониторах)."""
+        потом по всему экрану (около 0,4 с на двух мониторах).
+        clear_popups — закрывать по дороге известные попапы (rank up и т.п. всплывают поверх окна)."""
         end = time.monotonic() + timeout
         threshold = threshold or self.eyes.threshold
         while True:
             self._checkpoint()
             self.eyes.look()
+            if clear_popups:
+                popup = next(((p, r) for p in POPUPS if (r := self.eyes.sees(p)) is not None), None)
+                if popup is not None:
+                    self._press(popup[1], popup[0])
+                    self._sleep(0.4)
+                    continue
             rect = find(self.eyes.image, image, threshold, near=near) if near is not None else None
             if rect is None:
                 rect = find(self.eyes.image, image, threshold)
@@ -815,7 +822,7 @@ class Bot:
             time.sleep(0.15)
 
     def _click_step(self, step, timeout) -> bool:
-        rect = self._find_anywhere(step.snap.image, timeout, near=step.snap.rect)
+        rect = self._find_anywhere(step.snap.image, timeout, near=step.snap.rect, clear_popups=True)
         if rect is None:
             return False
         for attempt in range(3):
