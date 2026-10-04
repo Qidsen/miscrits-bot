@@ -190,3 +190,26 @@ def test_kill_uses_strongest_when_first_ability_disabled(tmp_path):
     bot.settings.kill_with_first = False
     bot._battle()
     assert (len("ability_2"), 0, 1, 1) in clicks  # Bash
+
+
+def test_caught_target_is_skipped(tmp_path):
+    from miscrits_hud.catalog import Catalog
+    from mbot.worldmap import Marker
+
+    fubby = Species(417, ("Fubby",), "Earth", "Exotic", {"Mansion": {"1": []}})
+    keeper = Species(538, ("Keeper",), "NatureEarth", "Legendary", {"Mansion": {"1": []}})
+    owned = Player("", 0, [{"m": 417, "h": 2, "s": 2, "e": 2, "d": 2, "p": 2, "pd": 2}])
+    eyes = FakeEyes([{"see": set()}])
+    bot = Bot(eyes, lambda r: None, lambda: Catalog([fubby, keeper]), lambda: owned,
+              Settings(hunt_targets=["Fubby", "Keeper"]), tmp_path / "l.json", tmp_path,
+              location_fn=lambda: ("Mansion", 1))
+
+    class Maps:
+        def markers(self, location):
+            return [Marker("Fubby", 417, "Exotic", 27, 3513), Marker("Keeper", 538, "Legendary", 754, 3594)]
+
+    bot._companion = Maps()
+    location, markers = bot._map_targets()
+    assert [m.name for m in markers] == ["Keeper"]
+    bot.stats.catches.append((538, "B"))  # поймали и Keeper
+    assert bot._map_targets() is None

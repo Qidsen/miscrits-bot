@@ -365,6 +365,7 @@ class MainWindow(QMainWindow):
             self._show_locmap(*data)
         elif kind == "stats":
             self._show_stats(data)
+            self._hunt_summary()
 
     def _show_stats(self, stats):
         for key in ("battles", "captures", "plat_captures", "trainings", "heals"):
@@ -544,8 +545,19 @@ class MainWindow(QMainWindow):
             return
         lines = []
         on_map = self._markers_by_name()
+        catalog = self.catalogs.get()
+        by_name = {s.names[0]: s for s in catalog.species} if catalog else {}
+        collection = self._collection()
+        if self.bot is not None:
+            collection = collection.merged(self.bot.stats.catches)
         for name in targets:
             spots = [str(i + 1) for i, s in enumerate(self.teaching.spots) if name in s.species_here()]
+            species = by_name.get(name)
+            if species is not None and collection.owns(species.id):
+                best = collection.best(species.id)
+                lines.append(f"<b>{name}</b>: <span style='color:{theme.GREEN}'>✓ поймана{f' ({best})' if best else ''}</span>"
+                             f" <span style='color:{theme.MUTED}'>— бот её больше не ищет</span>")
+                continue
             if name in on_map:
                 where = f"<span style='color:{theme.GREEN}'>✓ точка на карте сайта</span> ({', '.join(sorted(on_map[name]))})"
             elif spots:

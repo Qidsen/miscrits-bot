@@ -58,7 +58,8 @@ class Bot:
         self._companion = companion
         self._game_rect_fn = game_rect_fn
         self._locators = {}
-        self._marker_used = {}  # (локация, имя, x, y) -> time.monotonic() клика
+        self._marker_used = {}
+        self._all_caught_said = False  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
         self._catalog_fn = catalog_fn
         self._player_fn = player_fn
@@ -285,7 +286,8 @@ class Bot:
         order = [(self._spot + k) % len(spots) for k in range(len(spots))]
         ready = [i for i in order if now - self._spot_used.get(i, float("-inf")) >= cooldown]
         # точки, где водится цель охоты, — первыми, как только остыли
-        targets = set(self.settings.hunt_targets)
+        catalog = self._catalog_fn()
+        targets = self._open_targets(catalog) if catalog is not None else set(self.settings.hunt_targets)
         ready.sort(key=lambda i: not (spots[i].species_here() & targets))
         if not ready:
             wait = min(cooldown - (now - self._spot_used[i]) for i in order)
@@ -329,6 +331,17 @@ class Bot:
 
     # ---- охота по карте сайта ----
 
+    def _open_targets(self, catalog) -> set:
+        """Цели охоты, которых ещё нет в коллекции: поймали Fubby — дальше ищем только остальных."""
+        collection = self._collection()
+        by_name = {s.names[0]: s for s in catalog.species}
+        targets = {t for t in self.settings.hunt_targets if t not in by_name or not collection.owns(by_name[t].id)}
+        if self.settings.hunt_targets and not targets and not self._all_caught_said:
+            self._all_caught_said = True
+            self._say("все цели охоты пойманы 🎉 — дальше обычные точки")
+            self._emit("targets_done", None)
+        return targets
+
     def _map_targets(self):
         """(локация, маркеры целей в текущей зоне) или None, если охотиться по карте нельзя."""
         if not self.settings.hunt_targets or self._companion is None or self._location_fn is None:
@@ -338,7 +351,9 @@ class Bot:
         if not where or catalog is None:
             return None
         location, area = where
-        targets = set(self.settings.hunt_targets)
+        targets = self._open_targets(catalog)
+        if not targets:
+            return None
         by_id = {s.id: s for s in catalog.species}
         markers = []
         for m in self._companion.markers(location):
