@@ -24,7 +24,8 @@ class Settings:
     spot_cooldown: int = 20       # кулдаун точки поиска с момента клика, с
     heal_below: int = 40          # % HP моего крита после боя, ниже которого идём лечиться
     plat_capture_limit: int = 3   # платиновых попыток за бой (только Exotic/Legendary)
-    capture_min_chance: int = 70  # %, с которого жмём Capture
+    capture_min_chance: int = 95  # %: при таком шансе ловим сразу, не добивая до порога
+    capture_hp_floor: int = 10    # до скольких HP подводить цель перед поимкой
     train_every: int = 0          # если «Есть кого тренировать» не обучено: тренировка раз в N боёв (0 — никогда)
     match_threshold: float = 0.82
     button_size: int = 110        # сторона квадрата, который снимается вокруг курсора по F4

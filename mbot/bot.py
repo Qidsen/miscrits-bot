@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from .brain.capture import CAPTURE, decide
+from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import ATTACK, STALL, DamageModel, choose_capture, choose_kill, moves_from_catalog
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
@@ -579,9 +579,11 @@ class Bot:
                         and plat_used < self.settings.plat_capture_limit):
                     plat = self.eyes.sees("plat_capture")
                 chance = self.eyes.read_percent("capture_chance") if self.eyes.knows("capture_chance") else None
+                precious = bool(enemy) and enemy.rarity in PLAT_RARITIES
                 action = choose_capture(moves, self.model, my_name, target_element,
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
-                                        self.settings.capture_min_chance, (can_capture or plat) is not None)
+                                        self.settings.capture_min_chance, (can_capture or plat) is not None,
+                                        precious=precious, floor=self.settings.capture_hp_floor)
                 if action.kind == CAPTURE:
                     if can_capture is not None:
                         self._press(can_capture, "capture")
@@ -594,6 +596,13 @@ class Bot:
                     self._sleep(2.5)
                     continue
                 if action.kind == STALL:
+                    if not extras and precious:
+                        # нечем безопасно занять ход, а ошибка тут — убитый экзотик/легендарка: пусть решит человек
+                        self._say(f"⚠ {enemy.names[0]} ({enemy.rarity}): нет безопасного хода — пауза, сходите сами")
+                        self.pause(f"{enemy.names[0]}: нет безопасного хода — сделайте ход сами и снимите паузу")
+                        self._checkpoint()
+                        last = None
+                        continue
                     self._use_any(extras or [min(moves, key=lambda m: m.power).name], my_name)
                     last = None
                     continue

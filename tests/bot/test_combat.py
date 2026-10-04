@@ -78,10 +78,14 @@ def test_stall_when_nothing_safe_and_capture_unavailable():
     assert a.kind == STALL
 
 
-def test_without_chance_capture_at_low_hp_ratio():
-    m = trained(HIT=0.1)
-    a = choose_capture([HIT], m, "Me", "Fire", hp=30, max_hp=100, chance=None, min_chance=70, can_capture=True)
-    assert a.kind == CAPTURE
+def test_weakens_down_to_floor_before_capturing():
+    m = trained(HIT=0.1)  # HIT снимает ~1 HP
+    # 30 HP: до порога 10 ещё далеко — бьём, даже если шанс неизвестен
+    assert choose_capture([HIT], m, "Me", "Fire", hp=30, max_hp=100, chance=None, min_chance=95,
+                          can_capture=True).kind == ATTACK
+    # 11 HP: удар может опустить ниже 10 — ловим
+    assert choose_capture([HIT], m, "Me", "Fire", hp=11, max_hp=100, chance=None, min_chance=95,
+                          can_capture=True).kind == CAPTURE
 
 
 def test_element_multiplier_table():
@@ -120,3 +124,19 @@ def test_capture_keeps_safety_margin():
     assert a.kind == CAPTURE  # 11.5 > 70% от 15 — бить опасно, ловим
     a = choose_capture([HIT], m, "Me", "Fire", hp=40, max_hp=100, chance=10, min_chance=70, can_capture=True)
     assert a.kind == ATTACK
+
+
+def test_precious_needs_real_observations_and_half_hp():
+    m = DamageModel()
+    for _ in range(3):
+        m.observe("Me", HIT, "Fire", 10)  # HIT ≈ 10 урона, верхняя оценка ≈ 11.5
+    # обычный крит: 11.5 < 70% от 30 — бьём
+    assert choose_capture([HIT, MULTI], m, "Me", "Fire", hp=30, max_hp=100, chance=5, min_chance=70,
+                          can_capture=True).kind == ATTACK
+    # экзотик: 11.5 < 50% от 30 — HIT можно; MULTI (Wind) по Fire ни разу не видели — нельзя
+    a = choose_capture([HIT, MULTI], m, "Me", "Fire", hp=30, max_hp=100, chance=5, min_chance=70,
+                       can_capture=True, precious=True)
+    assert a.kind == ATTACK and a.move == HIT
+    # экзотик с 20 HP: 11.5 > 50% от 20 — не бьём, ловим
+    assert choose_capture([HIT], m, "Me", "Fire", hp=20, max_hp=100, chance=5, min_chance=70,
+                          can_capture=True, precious=True).kind == CAPTURE

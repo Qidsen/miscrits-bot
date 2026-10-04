@@ -53,7 +53,8 @@ SETTING_LABELS = {
     "spot_cooldown": "Кулдаун точки поиска (с момента клика), с",
     "heal_below": "Идти лечиться, если HP ниже, %",
     "plat_capture_limit": "Платиновых попыток за бой (Exotic/Legendary)",
-    "capture_min_chance": "Жать Capture с шанса, %",
+    "capture_min_chance": "Ловить сразу, если шанс поимки не ниже, %",
+    "capture_hp_floor": "Перед поимкой подводить HP цели до",
     "train_every": "Тренировка каждые N боёв (если «Есть кого тренировать» не обучено; 0 — нет)",
     "match_threshold": "Точность совпадения картинок (0.5–0.99)",
     "button_size": "Размер снимка кнопки по F4, px",
@@ -71,7 +72,7 @@ def to_pixmap(image, max_w=160, max_h=60) -> QPixmap:
 SETTING_GROUPS = (
     ("Поведение и перерывы", ("delay_min", "delay_max", "break_every_min", "break_every_max",
                               "break_len_min", "break_len_max", "session_limit_min")),
-    ("Охота и бой", ("spot_cooldown", "kill_with_first", "capture_min_chance", "plat_capture_limit",
+    ("Охота и бой", ("spot_cooldown", "kill_with_first", "capture_hp_floor", "capture_min_chance", "plat_capture_limit",
                      "heal_below", "train_every")),
     ("Распознавание", ("match_threshold", "button_size", "tesseract_cmd")),
 )

@@ -6,7 +6,8 @@ ATTACK, CAPTURE, STALL = "attack", "capture", "stall"
 DEFAULT_RATIO = 1.5  # урон за единицу ap, пока наблюдений нет
 DEFAULT_HIGH = 4.0
 LOW_HP_RATIO = 0.35
-SAFETY_MARGIN = 0.3  # при поимке атака не должна (по худшей оценке) снимать больше 70% оставшегося HP  # без OCR шанса поимки ловим, когда у цели осталось столько HP
+PRECIOUS_SEEN = 2  # Exotic/Legendary: только атаками, чей урон по этой стихии уже видели
+PRECIOUS_EXTRA = 1.25  # и с дополнительным запасом к худшей оценке  # без OCR шанса поимки ловим, когда у цели осталось столько HP
 
 
 @dataclass(frozen=True)
@@ -124,6 +125,11 @@ class DamageModel:
             return total / n * m * move.power * max_hp, top * 1.5 * m * move.power * max_hp
         return None
 
+    def observed(self, attacker, move, target_element) -> int:
+        """Сколько раз видели урон именно этой стихии атаки по этой стихии цели."""
+        stats = self._stats.get(self._key(attacker, move, target_element))
+        return int(stats[0]) if stats else 0
+
     def to_json(self) -> dict:
         return {k: list(v) for k, v in self._stats.items()}
 
@@ -132,15 +138,25 @@ def choose_kill(moves, model, attacker, target_element) -> Move:
     return max(moves, key=lambda m: model.estimate(attacker, m, target_element)[0] * min(m.accuracy, 100) / 100)
 
 
-def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, min_chance, can_capture) -> Action:
-    if can_capture:
-        if chance is not None and chance >= min_chance:
-            return Action(CAPTURE)
-        if chance is None and max_hp and hp / max_hp <= LOW_HP_RATIO:
-            return Action(CAPTURE)
-    # безопасна атака, после которой даже в худшем случае у цели останется заметная часть HP
-    limit = hp * (1 - SAFETY_MARGIN)
-    safe = [m for m in moves if model.estimate(attacker, m, target_element, max_hp)[1] < limit]
+def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, min_chance, can_capture,
+                   precious=False, floor=10) -> Action:
+    """Подводим HP цели как можно ближе к floor и только потом ловим.
+    Удар безопасен, если даже по худшей оценке у цели останется не меньше floor HP. Из безопасных берём
+    самый сильный. Безопасных нет — ловим (или занимаем ход безопасной способностью, если поймать нельзя).
+    Сразу ловим, только если шанс уже не ниже min_chance.
+    precious — Exotic/Legendary: только атаки, чей урон по этой стихии уже видели, и худшая оценка с запасом."""
+    if can_capture and chance is not None and chance >= min_chance:
+        return Action(CAPTURE)
+    room = hp - floor
+    safe = []
+    for m in moves:
+        high = model.estimate(attacker, m, target_element, max_hp)[1]
+        if precious:
+            if model.observed(attacker, m, target_element) < PRECIOUS_SEEN:
+                continue
+            high *= PRECIOUS_EXTRA
+        if high <= room:
+            safe.append(m)
     if safe:
         return Action(ATTACK, max(safe, key=lambda m: model.estimate(attacker, m, target_element, max_hp)[0]))
     return Action(CAPTURE) if can_capture else Action(STALL)
