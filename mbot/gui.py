@@ -316,7 +316,8 @@ class MainWindow(QMainWindow):
         v.addWidget(self.battle_sides)
         self.battle_moves = QTableWidget(0, 8)
         self.battle_moves.setHorizontalHeaderLabels(["Атака", "Стихия", "× стихии", "Ожидаемо", "Худший случай",
-                                                     "Откуда прогноз", "Ударов видел", "Вердикт"])
+                                                     "Откуда прогноз", "Ударов видел
+(по этой стихии)", "Вердикт"])
         self.battle_moves.verticalHeader().setVisible(False)
         self.battle_moves.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.battle_moves.setSelectionMode(QAbstractItemView.NoSelection)
@@ -464,8 +465,15 @@ class MainWindow(QMainWindow):
             self.battle_events.insertItem(0, item)
             while self.battle_events.count() > 300:
                 self.battle_events.takeItem(self.battle_events.count() - 1)
+        elif kind == "hit":
+            # счётчик «Ударов видел» в карточке боя — сразу после записи удара
+            for row in range(self.battle_moves.rowCount()):
+                cell = self.battle_moves.item(row, 0)
+                if cell is not None and cell.text() == data["ability"]:
+                    self.battle_moves.setItem(row, 6, QTableWidgetItem(str(data["seen"])))
         elif kind == "battle_end":
             self.battle_title.setText("⚔  Сейчас не в бою")
+            self._refresh_damage()
         elif kind == "stats":
             self._show_stats(data)
             self._refresh_damage()

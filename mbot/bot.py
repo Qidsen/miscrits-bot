@@ -568,7 +568,7 @@ class Bot:
                     # бой кончился нашим ударом — следующего хода нет, точный урон не увидеть: записываем
                     # «не меньше HP, что было у цели», иначе удары, которые убивают сразу, в журнал не попадали бы
                     attacker, move, hp_before = last
-                    self.hits.record(attacker, self.hits.attacker_level, move, enemy.names[0] if enemy else "?",
+                    self._record_hit(attacker, self.hits.attacker_level, move, enemy.names[0] if enemy else "?",
                                      enemy.element if enemy else "", self.hits.level, self._last_max_hp, hp_before,
                                      rank, kill=True)
                 self._train_seen = self._summary_says_train()
@@ -625,7 +625,7 @@ class Bot:
             if last and hp and last[0] == my_name and hp[0] <= last[2]:
                 # один наш удар за ход: урон = HP цели до него минус HP сейчас. Если HP выросло (противник
                 # подлечился), удар не записываем — разница была бы неправдой
-                self.hits.record(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
+                self._record_hit(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
                                  target_element, self.hits.level, hp[1], last[2] - hp[0], rank)
             if me is None:
                 raise Stuck("не распознал своего крита")
@@ -883,7 +883,7 @@ class Bot:
         self._emit("battle_log", "⚠ добил при поимке — см. «События»")
         self._say(f"⚠ добил при поимке: {name} {rank or ''} — {move.name} при {hp_before} HP "
                   f"(прогноз: ожидаемо {forecast[0]:.0f}, худший {forecast[1]:.0f}, {forecast[2]}). Скриншот: {shot}")
-        self.hits.record(attacker, self.hits.attacker_level, move, name, target_element, self.hits.level,
+        self._record_hit(attacker, self.hits.attacker_level, move, name, target_element, self.hits.level,
                          self._last_max_hp, hp_before, rank, kill=True)
         path = self._learn_path.with_name("incidents.csv")
         new = not path.exists()
@@ -892,6 +892,17 @@ class Bot:
                 f.write("time,enemy,rank,level,attacker,ability,hp_before,expected,worst,source\n")
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{name},{rank or ''},{self.hits.level or ''},{attacker},"
                     f"{move.name},{hp_before},{forecast[0]:.0f},{forecast[1]:.0f},{forecast[2]}\n")
+
+    def _record_hit(self, attacker, attacker_level, move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
+                    damage, enemy_rank=None, kill=False):
+        """Записать удар в журнал и сразу показать это в «Ход боя» и в карточке боя."""
+        self.hits.record(attacker, attacker_level, move, enemy_name, enemy_element, enemy_level, enemy_max_hp, damage,
+                         enemy_rank, kill=kill)
+        what = f"≥{damage}, добивающий" if kill else ("промах" if damage == 0 else str(damage))
+        seen = self.hits.observed(attacker, move, enemy_element)
+        self._emit("battle_log", f"📝 записал: {move.name} → {enemy_name} ({enemy_element or '?'}): {what} "
+                                 f"· видел таких ударов: {seen}")
+        self._emit("hit", {"ability": move.name, "seen": seen})
 
     def _stats_pair(self, attacker, attacker_level, enemy, enemy_level, enemy_rank):
         return stats_pair(self._catalog_fn(), self._player_fn(), attacker, attacker_level, enemy, enemy_level,
