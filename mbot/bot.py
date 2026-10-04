@@ -34,6 +34,7 @@ MISS_RETRIES = 2
 EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
+PAGE_READ_TRIES = 3  # столько раз перечитываем страницы способностей, если на них остались «?»
 LIGHT_BUTTONS_AFTER = 4.0  # с: столько ждём обученный «Мой ход», прежде чем верить светлым кнопкам
 MY_TURN_STRICT = 0.93  # картинка «Мой ход» — строгий порог: в строке сообщений любой текст похож на любой
 EXPLORE_SWITCH_CHANCE = 0.3  # доля боёв «на убой», в которых пробуем другого крита команды
@@ -95,6 +96,7 @@ class Bot:
         self._all_caught_said = False
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
+        self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
         self._train_seen = None  # что сказала сводка последнего боя про тренировку
         self._last_max_hp = None  # (локация, имя, x, y) -> time.monotonic() клика
@@ -924,7 +926,11 @@ class Bot:
 
     def _known_moves(self, my_name, species):
         """Атаки и прочие способности крита, которые видны на кнопках (все страницы)."""
-        if my_name not in self._pages:
+        tries = self._page_reads.get(my_name, 0)
+        unknown = my_name in self._pages and any(n is None for page in self._pages[my_name] for n in page)
+        if my_name not in self._pages or (unknown and tries < PAGE_READ_TRIES):
+            # на странице есть нераспознанные кнопки (читали во время анимации) — перечитываем на следующем ходу
+            self._page_reads[my_name] = tries + 1
             self._pages[my_name] = self._read_pages(species)
         names = {n for page in self._pages[my_name] for n in page if n}
         moves = moves_from_catalog(species.abilities, names)
