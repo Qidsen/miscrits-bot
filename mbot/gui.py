@@ -301,9 +301,9 @@ class MainWindow(QMainWindow):
         self.battle_sides = QLabel("")
         self.battle_sides.setWordWrap(True)
         v.addWidget(self.battle_sides)
-        self.battle_moves = QTableWidget(0, 7)
+        self.battle_moves = QTableWidget(0, 8)
         self.battle_moves.setHorizontalHeaderLabels(["Атака", "Стихия", "× стихии", "Ожидаемо", "Худший случай",
-                                                     "Ударов видел", "Вердикт"])
+                                                     "Откуда прогноз", "Ударов видел", "Вердикт"])
         self.battle_moves.verticalHeader().setVisible(False)
         self.battle_moves.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.battle_moves.setSelectionMode(QAbstractItemView.NoSelection)
@@ -339,14 +339,17 @@ class MainWindow(QMainWindow):
         for i, m in enumerate(info["moves"]):
             mult = m["mult"]
             cells = (m["name"], m["element"], f"×{mult:g}", f"{m['expected']:.0f}", f"{m['worst']:.0f}",
-                     str(m["seen"]), m["verdict"])
+                     m.get("source", ""), str(m["seen"]), m["verdict"])
             for col, value in enumerate(cells):
                 item = QTableWidgetItem(value)
                 if col == 1:
                     item.setForeground(QColor(theme.element_color(m["element"])))
                 elif col == 2:
                     item.setForeground(QColor(theme.GREEN if mult > 1 else (theme.RED if mult < 1 else theme.MUTED)))
-                elif col == 6:
+                elif col == 5:
+                    item.setForeground(QColor(theme.GREEN if m.get("source") == "журнал" else
+                                              theme.ACCENT if m.get("source") == "формула" else theme.MUTED))
+                elif col == 7:
                     v = m["verdict"]
                     item.setForeground(QColor(theme.ACCENT if v.startswith("выбрана") else
                                               theme.GREEN if "безопасно" in v else

@@ -1,8 +1,10 @@
-"""Журнал ударов и прогноз урона по похожим ударам.
+"""Журнал ударов и прогноз урона.
 
-Каждый удар пишется в hits.csv: кто бил, какой способностью, по кому (вид, стихия, уровень, макс. HP), сколько
-снял. Прогноз — по долям HP цели у похожих ударов: та же стихия атаки по той же стихии цели и противник близкого
-уровня; если таких мало — шире по уровню, а если совсем нет — общая модель DamageModel."""
+Каждый удар пишется в hits.csv: кто бил (и на каком уровне), какой способностью, по кому (вид, стихия, уровень,
+ранг, макс. HP), сколько снял. Прогноз, по убыванию надёжности:
+1) похожие удары из журнала — та же стихия атаки по той же стихии цели, близкий уровень противника и атакующего;
+2) формула со статами (brain/formula.py), подогнанная по всему журналу, — для ударов, которых ещё не было;
+3) общая модель DamageModel."""
 
 import csv
 import os
@@ -10,12 +12,15 @@ import time
 from dataclasses import dataclass
 
 from .combat import DamageModel, Move
+from .formula import base_damage, fit
 
 FIELDS = ("time", "attacker", "attacker_level", "ability", "ap", "times", "atk_element", "enemy", "enemy_element",
-          "enemy_level", "enemy_max_hp", "damage")
+          "enemy_level", "enemy_max_hp", "damage", "enemy_rank")
 LEVEL_STEPS = (3, 8)  # сначала противники ±3 уровня, потом ±8
 MIN_SIMILAR = 2
+TRUST_SIMILAR = 3  # столько похожих ударов — и журнал важнее формулы
 ATTACKER_LEVEL_STEP = 1
+FORMULA_MIN_MARGIN = 0.25  # худший случай по формуле — минимум +25% к прогнозу
 
 
 @dataclass(frozen=True)
@@ -23,17 +28,28 @@ class Hit:
     attacker: str
     attacker_level: int | None
     ability: str
-    power: int
+    ap: int
+    times: int
     atk_element: str
+    enemy: str
     enemy_element: str
     enemy_level: int | None
+    enemy_rank: str | None
     enemy_max_hp: int
     damage: int
+
+    @property
+    def power(self) -> int:
+        return self.ap * self.times
 
     @property
     def share(self) -> float:
         """Доля максимального HP цели на единицу силы атаки."""
         return self.damage / (self.power * self.enemy_max_hp)
+
+    @property
+    def move(self) -> Move:
+        return Move(self.ability, self.ap, self.times, 100, self.atk_element)
 
 
 def _int(value):
@@ -45,14 +61,20 @@ def _int(value):
 
 class HitBook:
     """Совместим с DamageModel по estimate/observed — его можно отдавать в choose_capture/choose_kill.
-    level — уровень текущего противника (ставит бот в начале боя)."""
+    Перед ходом бот задаёт контекст: level/enemy/enemy_rank (противник) и attacker_level (мой крит).
+    stats(attacker, attacker_level, enemy, enemy_level, enemy_rank) -> (статы атакующего, статы цели) | None."""
 
-    def __init__(self, path, fallback: DamageModel):
+    def __init__(self, path, fallback: DamageModel, stats=None):
         self.path = path
         self.fallback = fallback
+        self.stats = stats
         self.level = None  # уровень текущего противника
+        self.enemy = None  # имя текущего противника
+        self.enemy_rank = None
         self.attacker_level = None  # уровень моего крита сейчас: у растущих критов урон меняется с уровнем
         self.hits = []
+        self._calibration = None
+        self._calibrated = False
         if path and os.path.exists(path):
             with open(path, encoding="utf-8", newline="") as f:
                 for row in csv.DictReader(f):
@@ -62,20 +84,21 @@ class HitBook:
 
     @staticmethod
     def _from_row(row):
-        power = (_int(row.get("ap")) or 0) * (_int(row.get("times")) or 1)
+        ap, times = _int(row.get("ap")) or 0, _int(row.get("times")) or 1
         max_hp, damage = _int(row.get("enemy_max_hp")), _int(row.get("damage"))
-        if not power or not max_hp or damage is None:
+        if not ap or not max_hp or damage is None:
             return None
-        return Hit(row.get("attacker", ""), _int(row.get("attacker_level")), row.get("ability", ""), power, row.get("atk_element", ""),
-                   row.get("enemy_element", ""), _int(row.get("enemy_level")), max_hp, damage)
+        return Hit(row.get("attacker", ""), _int(row.get("attacker_level")), row.get("ability", ""), ap, times,
+                   row.get("atk_element", ""), row.get("enemy", ""), row.get("enemy_element", ""),
+                   _int(row.get("enemy_level")), row.get("enemy_rank") or None, max_hp, damage)
 
     def record(self, attacker, attacker_level, move: Move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
-               damage) -> None:
+               damage, enemy_rank=None) -> None:
         """Записать удар (и промах — damage 0) в журнал; в прогноз идут только попадания."""
         row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "attacker": attacker, "attacker_level": attacker_level or "",
                "ability": move.name, "ap": move.ap, "times": move.times, "atk_element": move.element,
                "enemy": enemy_name, "enemy_element": enemy_element, "enemy_level": enemy_level or "",
-               "enemy_max_hp": enemy_max_hp, "damage": damage}
+               "enemy_max_hp": enemy_max_hp, "damage": damage, "enemy_rank": enemy_rank or ""}
         if self.path:
             new = not os.path.exists(self.path)
             with open(self.path, "a", encoding="utf-8", newline="") as f:
@@ -86,7 +109,10 @@ class HitBook:
         hit = self._from_row({k: str(v) for k, v in row.items()})
         if hit is not None:
             self.hits.append(hit)
+            self._calibrated = False
         self.fallback.observe(attacker, move, enemy_element, damage, enemy_max_hp)
+
+    # ---- похожие удары ----
 
     def _same(self, attacker, move, target_element):
         return [h for h in self.hits if h.damage > 0 and h.attacker == attacker
@@ -108,14 +134,51 @@ class HitBook:
                 return near
         return same if len(same) >= MIN_SIMILAR else []
 
+    # ---- формула ----
+
+    def calibration(self):
+        """Масштаб и множители стихий, подогнанные по журналу (пересчитываются после новых ударов)."""
+        if not self._calibrated:
+            self._calibrated = True
+            rows = []
+            if self.stats is not None:
+                for h in self.hits:
+                    pair = self.stats(h.attacker, h.attacker_level, h.enemy, h.enemy_level, h.enemy_rank)
+                    if pair is not None:
+                        rows.append((base_damage(h.move, *pair), h.move, h.enemy_element, h.damage))
+            self._calibration = fit(rows)
+        return self._calibration
+
+    def formula(self, attacker, move, target_element):
+        """(ожидаемо, худший случай) по формуле для текущего противника или None."""
+        if self.stats is None or self.enemy is None:
+            return None
+        cal = self.calibration()
+        if cal is None:
+            return None
+        pair = self.stats(attacker, self.attacker_level, self.enemy, self.level, self.enemy_rank)
+        if pair is None:
+            return None
+        expected = base_damage(move, *pair) * cal.factor(move, target_element)
+        return expected, expected * (1 + max(FORMULA_MIN_MARGIN, cal.spread * 1.2))
+
+    # ---- прогноз ----
+
     def estimate(self, attacker, move, target_element, max_hp=None):
+        return self.estimate_with_source(attacker, move, target_element, max_hp)[:2]
+
+    def estimate_with_source(self, attacker, move, target_element, max_hp=None):
+        """(ожидаемо, худший случай, откуда: «журнал» / «формула» / «общая»)."""
         similar = self._similar(attacker, move, target_element) if max_hp else []
-        if similar:
+        by_formula = None if len(similar) >= TRUST_SIMILAR else self.formula(attacker, move, target_element)
+        if similar and by_formula is None:
             shares = [h.share for h in similar]
             mean, top = sum(shares) / len(shares), max(shares)
             margin = 1.15 if len(shares) >= 3 else 1.5
-            return mean * move.power * max_hp, top * margin * move.power * max_hp
-        return self.fallback.estimate(attacker, move, target_element, max_hp)
+            return mean * move.power * max_hp, top * margin * move.power * max_hp, "журнал"
+        if by_formula is not None:
+            return (*by_formula, "формула")
+        return (*self.fallback.estimate(attacker, move, target_element, max_hp), "общая")
 
     def observed(self, attacker, move, target_element) -> int:
         """Сколько попаданий этой стихией по этой стихии цели видели (любого уровня)."""

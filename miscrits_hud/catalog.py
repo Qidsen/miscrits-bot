@@ -16,6 +16,10 @@ class Species:
     rarity: str
     locations: dict  # {"Forest": {"1": [дни], "2": []}}; дни 0..6, 0 = воскресенье; [] — каждый день
     abilities: tuple = ()  # словари способностей из miscrits.json (для бота)
+    tiers: tuple = ()  # (("hp", "Strong"), ("spd", "Weak"), …) — как растут статы вида (для расчёта урона)
+
+    def tier(self, stat: str) -> str:
+        return dict(self.tiers).get(stat, "")
 
     def days(self, location_name: str, area_id: int) -> tuple:
         return tuple(self.locations.get(location_name, {}).get(str(area_id)) or ())
@@ -30,7 +34,8 @@ class Catalog:
     def from_json(cls, raw: str) -> "Catalog":
         return cls([
             Species(int(x["id"]), tuple(x["names"]), x.get("element", ""), x.get("rarity", ""), x.get("locations") or {},
-                    tuple(x.get("abilities") or ()))
+                    tuple(x.get("abilities") or ()),
+                    tuple((k, x[k]) for k in ("hp", "spd", "ea", "pa", "ed", "pd") if k in x))
             for x in json.loads(raw)
         ])
 

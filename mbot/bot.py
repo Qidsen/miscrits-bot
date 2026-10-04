@@ -14,6 +14,7 @@ import numpy as np
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
+from .brain.formula import my_stats, rank_roll, stats_at
 from .brain.hits import HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
@@ -104,7 +105,8 @@ class Bot:
         self._paused = threading.Event()
         self.stats = Stats()
         self.model = self._load_model()
-        self.hits = HitBook(learn_path.with_name("hits.csv"), self.model)  # журнал ударов + прогноз по похожим
+        # журнал ударов + прогноз: по похожим ударам, иначе по формуле со статами
+        self.hits = HitBook(learn_path.with_name("hits.csv"), self.model, stats=self._stats_pair)
         self._pages = {}  # имя моего крита -> [[имена способностей по слотам] по страницам]
         self._page = 0
         self._spot = 0
@@ -570,6 +572,8 @@ class Bot:
                     self._say(f"противник не распознан — бью (скриншот: {shot})")
                 enemy_level = self.eyes.read_level("enemy")
                 self.hits.level = enemy_level
+                self.hits.enemy = enemy.names[0] if enemy else None
+                self.hits.enemy_rank = rank
                 decision = decide(enemy.id if enemy else None, rank, enemy.rarity if enemy else "", self._collection())
                 who = f"{enemy.names[0]} ({enemy.rarity}) {rank or '?'}" if enemy else "?"
                 self._say(f"бой: {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} — {decision.reason}")
@@ -596,7 +600,7 @@ class Bot:
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name:
                 self.hits.record(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
-                                 target_element, self.hits.level, hp[1], max(last[2] - hp[0], 0))
+                                 target_element, self.hits.level, hp[1], max(last[2] - hp[0], 0), rank)
             if me is None:
                 raise Stuck("не распознал своего крита")
             moves, extras = self._known_moves(my_name, me)
@@ -775,10 +779,14 @@ class Bot:
                 continue
             names = {n for page in self._pages[name] for n in page if n}
             moves = moves_from_catalog(species.abilities, names)
+            current_level, self.hits.attacker_level = self.hits.attacker_level, None
             action = choose_capture(moves, self.hits, name, target_element, hp[0], hp[1], None, 101, True,
                                     precious=precious, floor=self.settings.capture_hp_floor)
+            if action.kind != ATTACK:
+                self.hits.attacker_level = current_level
             if action.kind == ATTACK:
                 expected, worst = self.hits.estimate(name, action.move, target_element, hp[1])
+                self.hits.attacker_level = current_level
                 return slot, name, (f"у него {action.move.name}: ожидаемо {expected:.0f}, худший случай {worst:.0f} — "
                                     f"у цели {hp[0]} HP, останется не меньше {self.settings.capture_hp_floor}")
         return None
@@ -789,7 +797,7 @@ class Bot:
         floor = self.settings.capture_hp_floor
         rows = []
         for m in moves:
-            expected, worst = self.hits.estimate(my_name, m, target_element, hp[1] if hp else None)
+            expected, worst, source = self.hits.estimate_with_source(my_name, m, target_element, hp[1] if hp else None)
             seen = self.hits.observed(my_name, m, target_element)
             if decision.action == CAPTURE and hp:
                 worst_used = worst * (PRECIOUS_EXTRA if precious else 1)
@@ -799,7 +807,9 @@ class Bot:
                 verdict = ""
             if action.move is m:
                 verdict = "выбрана" + (f" · {verdict}" if verdict else "")
-            rows.append({"name": m.name, "element": m.element, "mult": multiplier(m.element, target_element),
+            cal = self.hits.calibration()
+            mult = cal.multiplier(m.element, target_element) if cal else multiplier(m.element, target_element)
+            rows.append({"name": m.name, "element": m.element, "mult": round(mult, 2), "source": source,
                          "expected": expected, "worst": worst, "seen": seen, "verdict": verdict})
         if action.kind == CAPTURE:
             text = (f"ловлю: шанс {chance}% ≥ {self.settings.capture_min_chance}%" if chance is not None
@@ -820,6 +830,29 @@ class Bot:
             "level": self.hits.level, "hp": hp, "me": my_name, "my_hp": mine, "mode": decision.action,
             "reason": decision.reason, "moves": rows, "action": text, "floor": floor,
         })
+
+    def _stats_pair(self, attacker, attacker_level, enemy, enemy_level, enemy_rank):
+        """(статы моего крита, статы противника) для формулы урона или None.
+        Мои — по данным игры (уровень, броски, бонусы); если копий вида несколько — та, что на этом уровне.
+        Противник — по тирам вида, уровню с панели и среднему броску по рангу."""
+        catalog = self._catalog_fn()
+        if catalog is None:
+            return None
+        by_name = {n: s for s in catalog.species for n in s.names}
+        mine, other = by_name.get(attacker), by_name.get(enemy)
+        if mine is None or other is None:
+            return None
+        player = self._player_fn()
+        copies = [m for m in (player.miscrits if player else []) if m.get("m") == mine.id]
+        if attacker_level:
+            copies = [m for m in copies if m.get("l") == attacker_level] or copies
+        if copies:
+            attacker_stats = my_stats(mine, max(copies, key=lambda m: m.get("l", 0)))
+        else:
+            attacker_stats = stats_at(mine, attacker_level or 1)
+        roll = rank_roll(enemy_rank)
+        enemy_stats = stats_at(other, enemy_level or 1, {k: roll for k in ("hp", "spd", "ea", "pa", "ed", "pd")})
+        return attacker_stats, enemy_stats
 
     def _first_ability(self, my_name, moves):
         """Первая способность на первой странице, если это атака (у многих критов она лечит)."""
