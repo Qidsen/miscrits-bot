@@ -579,6 +579,8 @@ class Bot:
                 my_ratio = mine[0] / mine[1]
             my_name = self.eyes.read_name("my_name", by_name)
             me = by_name.get(my_name)
+            my_level = self.eyes.read_level("my")
+            self.hits.attacker_level = my_level
             if switched is not None and my_name:
                 portrait, before = switched
                 switched = None
@@ -593,7 +595,7 @@ class Bot:
                 self._say(f"сменил крита: теперь {my_name}")
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name:
-                self.hits.record(last[0], self.eyes.read_level("my"), last[1], enemy.names[0] if enemy else "?",
+                self.hits.record(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
                                  target_element, self.hits.level, hp[1], max(last[2] - hp[0], 0))
             if me is None:
                 raise Stuck("не распознал своего крита")
@@ -687,15 +689,25 @@ class Bot:
     def _wait_turn(self):
         """Ждёт своего хода (или конца боя). «Мой ход» часто обучен на кнопке способности первой страницы —
         если после удара со второй страницы она так и открыта, ход не узнаётся; тогда листаем назад."""
-        end = time.monotonic() + 60
-        flipped_at = time.monotonic()
+        start = time.monotonic()
+        end = start + 60
+        flipped_at = start
+        shot_taken = False
         while time.monotonic() < end:
+            if not shot_taken and time.monotonic() - start > 10:
+                # долго не узнаём свой ход — сохраним, как выглядит экран: по нему правится распознавание
+                shot_taken = True
+                self.eyes.look()
+                self._say(f"долго жду свой ход — скриншот: {self._screenshot('turn-wait')}")
             turn, _ = self._wait_for(("my_turn", "battle_won", "captured"), timeout=3, while_visible="battle")
             if turn is not None:
                 return turn
             self.eyes.look()
             if self.eyes.sees("battle") is None:
                 return None
+            # «Мой ход» обучен на конкретной кнопке — после смены крита она другая; свой ход узнаём по жёлтым кнопкам
+            if self.eyes.abilities_active():
+                return "my_turn"
             if self._page != 0 and time.monotonic() - flipped_at > 2:
                 arrow = self.eyes.sees("ability_prev")
                 if arrow is not None:

@@ -234,6 +234,23 @@ class Eyes:
             return None
         return self.ranks.classify(crop(self.image, rect))
 
+    def abilities_active(self) -> bool:
+        """Свой ход по цвету кнопок способностей: в свой ход они светлые — белые (обычные) или жёлтые
+        (прокачанные), у любого крита. Нужны хотя бы две такие кнопки (выбранная бывает другого цвета)."""
+        if self.image is None:
+            return False
+        lit = 0
+        for slot in ("ability_1", "ability_2", "ability_3", "ability_4"):
+            rect = self.region(slot)
+            if rect is None:
+                continue
+            hsv = cv2.cvtColor(crop(self.image, rect), cv2.COLOR_BGR2HSV)
+            yellow = (hsv[:, :, 0] >= 20) & (hsv[:, :, 0] <= 35) & (hsv[:, :, 1] > 120) & (hsv[:, :, 2] > 170)
+            white = (hsv[:, :, 1] < 45) & (hsv[:, :, 2] > 215)
+            if float((yellow | white).mean()) > 0.4:
+                lit += 1
+        return lit >= 2
+
     def read_level(self, who: str):
         """Уровень крита ("enemy" или "my") — число в правом верхнем углу его панели, рядом с именем."""
         rect = self.region(f"{who}_name")

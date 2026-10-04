@@ -15,11 +15,13 @@ FIELDS = ("time", "attacker", "attacker_level", "ability", "ap", "times", "atk_e
           "enemy_level", "enemy_max_hp", "damage")
 LEVEL_STEPS = (3, 8)  # сначала противники ±3 уровня, потом ±8
 MIN_SIMILAR = 2
+ATTACKER_LEVEL_STEP = 1
 
 
 @dataclass(frozen=True)
 class Hit:
     attacker: str
+    attacker_level: int | None
     ability: str
     power: int
     atk_element: str
@@ -48,7 +50,8 @@ class HitBook:
     def __init__(self, path, fallback: DamageModel):
         self.path = path
         self.fallback = fallback
-        self.level = None
+        self.level = None  # уровень текущего противника
+        self.attacker_level = None  # уровень моего крита сейчас: у растущих критов урон меняется с уровнем
         self.hits = []
         if path and os.path.exists(path):
             with open(path, encoding="utf-8", newline="") as f:
@@ -63,7 +66,7 @@ class HitBook:
         max_hp, damage = _int(row.get("enemy_max_hp")), _int(row.get("damage"))
         if not power or not max_hp or damage is None:
             return None
-        return Hit(row.get("attacker", ""), row.get("ability", ""), power, row.get("atk_element", ""),
+        return Hit(row.get("attacker", ""), _int(row.get("attacker_level")), row.get("ability", ""), power, row.get("atk_element", ""),
                    row.get("enemy_element", ""), _int(row.get("enemy_level")), max_hp, damage)
 
     def record(self, attacker, attacker_level, move: Move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
@@ -91,6 +94,12 @@ class HitBook:
 
     def _similar(self, attacker, move, target_element):
         same = self._same(attacker, move, target_element)
+        if self.attacker_level is not None:
+            # крит растёт — удары с другого его уровня устарели; берём сделанные на этом уровне (±1), если их хватает
+            current = [h for h in same if h.attacker_level is not None
+                       and abs(h.attacker_level - self.attacker_level) <= ATTACKER_LEVEL_STEP]
+            if len(current) >= MIN_SIMILAR:
+                same = current
         if self.level is None:
             return same
         for step in LEVEL_STEPS:

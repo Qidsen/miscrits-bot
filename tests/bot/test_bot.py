@@ -54,6 +54,9 @@ class FakeEyes:
     def read_level(self, who):
         return 12 if who == "enemy" else 35
 
+    def abilities_active(self):
+        return "my_turn" in self.frame.get("see", ())
+
     def read_name(self, element_id, names):
         if element_id == "enemy_name":
             return self.enemy
