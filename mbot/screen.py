@@ -124,11 +124,13 @@ class Ocr:
             return parse_rank(self.text(image))
         letter, plus = parts
         padded = cv2.copyMakeBorder(letter, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
+        guesses = []
         for psm in (10, 7, 8):
             text = self._tess.image_to_string(padded, config=f"--psm {psm} -c tessedit_char_whitelist=SABCDF").strip()
-            if text[:1] in "SABCDF" and text:
-                return text[0] + ("+" if plus else "")
-        return None
+            if text and text[0] in "SABCDF":
+                guesses.append(text[0])
+        found = letter_by_shape(letter, guesses)
+        return found + ("+" if plus else "") if found else None
 
 
 def white_text(image: np.ndarray, scale: int = 4):
@@ -167,6 +169,32 @@ def white_text(image: np.ndarray, scale: int = 4):
     return cv2.copyMakeBorder(out, 25, 25, 25, 25, cv2.BORDER_CONSTANT, value=255)
 
 
+def letter_holes(letter: np.ndarray) -> list:
+    """Площади «дырок» буквы (чёрная буква на белом) относительно её рамки; мелкие блики не в счёт."""
+    background = (letter > 127).astype(np.uint8) * 255
+    inside = (_flood_outside(background.copy()) == 255).astype(np.uint8)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(inside)
+    total = letter.shape[0] * letter.shape[1]
+    return [stats[i, cv2.CC_STAT_AREA] / total for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] / total >= 0.03]
+
+
+# сколько дырок у буквы ранга: по этому числу проверяем (и, если надо, исправляем) Tesseract
+HOLES = {"B": 2, "A": 1, "D": 1, "C": 0, "F": 0, "S": 0}
+
+
+def letter_by_shape(letter: np.ndarray, guesses) -> str | None:
+    holes = letter_holes(letter)
+    for g in guesses:
+        if HOLES.get(g) == len(holes):
+            return g
+    if len(holes) >= 2:
+        return "B"
+    if len(holes) == 1:
+        # у D дырка большая и по центру, у A — маленький треугольник вверху
+        return "D" if holes[0] >= 0.12 else "A"
+    return guesses[0] if guesses else None
+
+
 def _flood_outside(free: np.ndarray) -> np.ndarray:
     """Пиксели free (255), достижимые от края картинки, помечаются 128."""
     h, w = free.shape
@@ -183,7 +211,14 @@ def rank_glyph(image: np.ndarray, scale: int = 6):
     Значок ранга — заливка внутри тёмной обводки, поэтому берём всё, что обводкой отрезано от краёв."""
     big = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
     hsv = cv2.cvtColor(big, cv2.COLOR_BGR2HSV)
-    outline = (hsv[:, :, 2] < 120) & (hsv[:, :, 1] > 70)
+    # обводка — тёмный вариант цвета буквы; порог считаем от яркости заливки, иначе буквы с тёмной
+    # заливкой (у низких рангов) целиком сливаются с обводкой
+    sat, val = hsv[:, :, 1], hsv[:, :, 2]
+    h, w = val.shape
+    middle = (slice(h // 4, 3 * h // 4), slice(w // 6, 2 * w // 3))
+    colored = val[middle][sat[middle] > 70]
+    fill = float(np.percentile(colored, 80)) if colored.size else 200.0
+    outline = ((val < 0.62 * fill) & (sat > 50)) | (val < 50)
     free = np.where(outline, 0, 255).astype(np.uint8)
     inside = (_flood_outside(free) == 255).astype(np.uint8)
     inside = cv2.morphologyEx(inside, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))

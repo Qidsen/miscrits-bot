@@ -99,7 +99,7 @@ def test_kill_battle_uses_strongest_attack(tmp_path):
     owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])  # Flue S+ уже есть
     bot, clicks = make_bot(eyes, tmp_path, owned)
     bot._battle()
-    assert (len("ability_2"), 0, 1, 1) in clicks  # Bash
+    assert (len("ability_1"), 0, 1, 1) in clicks  # Smack — первая способность (kill_with_first)
     assert bot.stats.captures == 0 and bot.stats.battles == 1
 
 
@@ -124,7 +124,7 @@ def test_low_hp_triggers_heal_route(tmp_path):
 
 class SpotEyes(FakeEyes):
     def __init__(self, count):
-        super().__init__([{"see": set()}])
+        super().__init__([{"see": {"come_back_later"}}])  # клик сразу «отвечает» — без повторов
         self.teaching.spots = [Snapshot((i * 100, 0, 10, 10)) for i in range(count)]
 
     def locate_spot(self, snap):
@@ -172,3 +172,21 @@ def test_battle_records_who_came_from_spot(tmp_path):
     bot._emit = lambda kind, data: events.append(kind)
     bot._hunt()
     assert eyes.teaching.spots[0].seen == {"Flue": 1} and "teaching_changed" in events
+
+
+def test_missed_spot_is_clicked_again(tmp_path):
+    eyes = SpotEyes(1)
+    eyes.frames = [{"see": set()}] * 30 + [{"see": {"come_back_later"}}]
+    bot, clicks = make_bot(eyes, tmp_path)
+    bot._hunt()
+    assert len(clicks) == 3  # клик + 2 повтора
+
+
+def test_kill_uses_strongest_when_first_ability_disabled(tmp_path):
+    turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
+    owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
+    bot, clicks = make_bot(eyes, tmp_path, owned)
+    bot.settings.kill_with_first = False
+    bot._battle()
+    assert (len("ability_2"), 0, 1, 1) in clicks  # Bash

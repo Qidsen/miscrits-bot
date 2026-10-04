@@ -32,8 +32,9 @@ def locate(image):
 
 
 def test_spot_found_after_camera_shift():
-    rect = locate(scene((120, -80)))
-    assert rect[:2] == (520, 220)
+    x, y, w, h = locate(scene((120, -80)))
+    # клик — в центр самого шара (60, 54 на снимке), а не в угол квадрата
+    assert (x + w // 2, y + h // 2) == (520 + 60, 220 + 54)
 
 
 def test_spot_found_when_mostly_covered_and_click_lands_on_visible_part():

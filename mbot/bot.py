@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 GAME_EXE = "miscrits.exe"
 MAX_ABILITY_PAGES = 5
+MISS_RETRIES = 2
 
 
 class Stopped(Exception):
@@ -282,9 +283,20 @@ class Bot:
             if rect is None:
                 continue
             self._spot = i + 1
-            self._press(rect, f"spot {i + 1}")
-            self._spot_used[i] = time.monotonic()
-            found, _ = self._wait_for(("battle", "come_back_later", *POPUPS), timeout=6)
+            found = None
+            for attempt in range(MISS_RETRIES + 1):
+                self._press(rect, f"spot {i + 1}" + (f" (ещё раз, {attempt})" if attempt else ""))
+                clicked_at = time.monotonic()
+                found, _ = self._wait_for(("battle", "come_back_later", *POPUPS), timeout=6)
+                if found is not None:
+                    break
+                # ни боя, ни попапа, ни «Come back later» — скорее всего, промахнулись мимо точки:
+                # персонаж подбежал к ней, кликаем ещё раз уже оттуда
+                self.eyes.look()
+                rect = self.eyes.locate_spot(spots[i])
+                if rect is None:
+                    break
+            self._spot_used[i] = clicked_at
             if found == "battle":
                 enemy = self._battle()
                 if enemy is not None:
@@ -329,6 +341,8 @@ class Bot:
                 name = self.eyes.read_name("enemy_name", by_name)
                 enemy = by_name.get(name)
                 rank = self.eyes.read_rank("enemy_rank") if self.eyes.knows("enemy_rank") else None
+                if rank is None and self.eyes.knows("enemy_rank"):
+                    self._save_rank_sample()
                 if enemy is None:
                     self._say("противник не распознан — бью")
                 decision = decide(enemy.id if enemy else None, rank, enemy.rarity if enemy else "", self._collection())
@@ -375,12 +389,32 @@ class Bot:
                     continue
                 move = action.move
             else:
-                move = choose_kill(moves, self.model, my_name, target_element)
+                move = self._first_ability(my_name, moves) if self.settings.kill_with_first else None
+                if move is None:
+                    move = choose_kill(moves, self.model, my_name, target_element)
             self._use(move.name, my_name)
             last = (my_name, move, hp[0]) if hp else None
             self._sleep(1.0)
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
         return enemy
+
+    def _first_ability(self, my_name, moves):
+        """Первая способность на первой странице, если это атака (у многих критов она лечит)."""
+        pages = self._pages.get(my_name) or [[]]
+        first = pages[0][0] if pages[0] else None
+        return next((m for m in moves if m.name == first), None)
+
+    def _save_rank_sample(self):
+        """Нераспознанный значок ранга — в logs/ranks: по таким образцам доучиваем распознавание."""
+        rect = self.eyes.region("enemy_rank")
+        if rect is None or self.eyes.image is None:
+            return
+        folder = self._logs_dir / "ranks"
+        folder.mkdir(exist_ok=True)
+        x, y, w, h = rect
+        ok, buf = cv2.imencode(".png", self.eyes.image[y:y + h, x:x + w])
+        if ok:
+            (folder / f"{time.strftime('%Y%m%d-%H%M%S')}.png").write_bytes(buf.tobytes())
 
     def _known_moves(self, my_name, species):
         """Атаки и прочие способности крита, которые видны на кнопках (все страницы)."""

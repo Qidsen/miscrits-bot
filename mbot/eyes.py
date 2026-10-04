@@ -11,6 +11,36 @@ PIECE_THRESHOLD = 0.8
 OBJECT_DIFF = 60  # насколько пиксель объекта отличается от фона по краям снимка
 
 
+def object_mask(image):
+    """Пиксели самого объекта на снимке точки: то, что заметно отличается от фона по краям снимка."""
+    ref = image.astype(np.int16)
+    border = np.concatenate([ref[0], ref[-1], ref[:, 0], ref[:, -1]])
+    return np.abs(ref - np.median(border, axis=0)).max(axis=2) > OBJECT_DIFF
+
+
+def object_center(image):
+    """Центр объекта на снимке точки (x, y) — того пятна, что ближе к центру снимка
+    (при обучении курсор стоял на объекте). None, если объект не выделяется."""
+    mask = object_mask(image).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    h, w = mask.shape
+    best, best_d = None, None
+    for i in range(1, count):
+        if stats[i, cv2.CC_STAT_AREA] < 40:
+            continue
+        cx, cy = centroids[i]
+        d = (cx - w / 2) ** 2 + (cy - h / 2) ** 2
+        if best_d is None or d < best_d:
+            best, best_d = (int(cx), int(cy)), d
+    if best is None:
+        return None
+    # центроид «рогалика» может лежать вне объекта — берём ближайший к нему пиксель самого объекта
+    ys, xs = np.nonzero(labels == labels[best[1], best[0]] if labels[best[1], best[0]] else mask)
+    k = int(np.argmin((xs - best[0]) ** 2 + (ys - best[1]) ** 2))
+    return int(xs[k]), int(ys[k])
+
+
 def object_pieces(image):
     """Кусочки снимка точки, где почти всё — сам объект, а не трава: (dx, dy, картинка)."""
     ref = image.astype(np.int16)
@@ -155,7 +185,12 @@ class Eyes:
         near = (x - SPOT_MARGIN // 2, y - SPOT_MARGIN // 2, w + SPOT_MARGIN, h + SPOT_MARGIN)
         rect = find(self.image, snap.image, SPOT_THRESHOLD, near=near)
         if rect is not None:
-            return rect
+            # кликаем в сам объект, а не в траву вокруг: мимо — персонаж подбежит, но поиска не будет
+            centre = object_center(snap.image)
+            if centre is None:
+                centre = (rect[2] // 2, rect[3] // 2)
+            cx, cy = rect[0] + centre[0], rect[1] + centre[1]
+            return cx - CLICK_HALF, cy - CLICK_HALF, 2 * CLICK_HALF, 2 * CLICK_HALF
         # точку загородили (обычно персонаж) — ищем незакрытые кусочки самого объекта
         best, best_score = None, PIECE_THRESHOLD
         for _, _, piece in object_pieces(snap.image):
