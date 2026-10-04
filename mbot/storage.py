@@ -23,8 +23,8 @@ class ElementDef:
 ELEMENTS = (
     ElementDef("battle", BUTTON, True, "Признак боя",
                "Элемент, который виден всё время боя и только в бою (например, кнопка побега)."),
-    ElementDef("my_turn", BUTTON, True, "Мой ход",
-               "Вкладка Abilities в момент, когда можно ходить (яркая, не серая)."),
+    ElementDef("my_turn", BUTTON, False, "Мой ход",
+               "Не обязательно: бот сам читает строку над способностями («It's your turn!»). Снимок — запасной вариант."),
     ElementDef("ability_1", REGION, True, "Способность 1", "Кнопка первой способности (рамкой)."),
     ElementDef("ability_2", REGION, True, "Способность 2", "Кнопка второй способности."),
     ElementDef("ability_3", REGION, True, "Способность 3", "Кнопка третьей способности."),

@@ -57,6 +57,12 @@ class FakeEyes:
     def abilities_active(self):
         return "my_turn" in self.frame.get("see", ())
 
+    def turn_message(self):
+        return "It's your turn" if "my_turn" in self.frame.get("see", ()) else ""
+
+    def sees_strictly(self, element_id, threshold):
+        return self.sees(element_id)
+
     def read_name(self, element_id, names):
         if element_id == "enemy_name":
             return self.enemy

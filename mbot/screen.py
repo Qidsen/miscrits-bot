@@ -106,6 +106,7 @@ class Ocr:
         чёрно-белому, поэтому пробуем по очереди, пока не получится что-то осмысленное."""
         extra = f" -c tessedit_char_whitelist={whitelist}" if whitelist else ""
         outlined = white_text(image)
+        block = white_text(image, all_lines=True)  # название в две строки («Toothy / Torch»)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -114,6 +115,8 @@ class Ocr:
         for psm in (7, 8):
             for picture in pictures:
                 yield self._tess.image_to_string(picture, config=f"--psm {psm}{extra}").strip()
+        if block is not None:
+            yield " ".join(self._tess.image_to_string(block, config=f"--psm 6{extra}").split())
 
     def read(self, image: np.ndarray, parse, whitelist: str | None = None):
         """Первое значение parse([текст]), которое не None, перебирая способы распознавания."""
@@ -147,7 +150,7 @@ class Ocr:
         return found + ("+" if plus else "") if found else None
 
 
-def white_text(image: np.ndarray, scale: int = 4):
+def white_text(image: np.ndarray, scale: int = 4, all_lines: bool = False):
     """Белые буквы с тёмной обводкой (HP, кнопки способностей) → чёрный текст на белом, или None.
     Фон и иконки отбрасываются: берётся самая многочисленная строка фигур похожего размера."""
     big = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
@@ -177,6 +180,10 @@ def white_text(image: np.ndarray, scale: int = 4):
             current = [i]
     groups.append(current)
     text = max(groups, key=lambda g: (len(g), sum(stats[i, cv2.CC_STAT_AREA] for i in g)))
+    if all_lines:
+        # все буквы похожей высоты, в том числе со второй строки
+        tall = max(stats[i, cv2.CC_STAT_HEIGHT] for i in text)
+        text = [i for i in shapes if stats[i, cv2.CC_STAT_HEIGHT] >= tall * 0.6]
     mask = np.isin(labels, text)
     ys, xs = np.where(mask)
     out = np.where(mask, 0, 255).astype(np.uint8)[max(ys.min() - 10, 0):ys.max() + 10, max(xs.min() - 10, 0):xs.max() + 10]

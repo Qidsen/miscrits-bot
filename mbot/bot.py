@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import random
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия �
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
 LIGHT_BUTTONS_AFTER = 4.0  # с: столько ждём обученный «Мой ход», прежде чем верить светлым кнопкам
+MY_TURN_STRICT = 0.93  # картинка «Мой ход» — строгий порог: в строке сообщений любой текст похож на любой
 EXPLORE_SWITCH_CHANCE = 0.3  # доля боёв «на убой», в которых пробуем другого крита команды
 PORTRAIT_MATCH = 0.8  # насколько портрет в столбике должен совпасть с запомненным
 SWITCH_FAR = 0.15  # смена ради поимки — только если до порога HP ещё больше 15% макс. HP цели
@@ -92,6 +94,7 @@ class Bot:
         self._marker_used = {}
         self._all_caught_said = False
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
+        self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._switch_broken = False
         self._train_seen = None  # что сказала сводка последнего боя про тренировку
         self._last_max_hp = None  # (локация, имя, x, y) -> time.monotonic() клика
@@ -705,7 +708,7 @@ class Bot:
         если после удара со второй страницы она так и открыта, ход не узнаётся; тогда листаем назад."""
         start = time.monotonic()
         end = start + 60
-        flipped_at = start
+        gone = 0
         shot_taken = False
         while time.monotonic() < end:
             if not shot_taken and time.monotonic() - start > 10:
@@ -713,23 +716,35 @@ class Bot:
                 shot_taken = True
                 self.eyes.look()
                 self._say(f"долго жду свой ход — скриншот: {self._screenshot('turn-wait')}")
-            turn, _ = self._wait_for(("my_turn", "battle_won", "captured"), timeout=3, while_visible="battle")
-            if turn is not None:
-                return turn
+            self._checkpoint()
             self.eyes.look()
+            for done in ("battle_won", "captured"):
+                if self.eyes.sees(done) is not None:
+                    return done
             if self.eyes.sees("battle") is None:
-                return None
-            # «Мой ход» обучен на кнопке конкретного крита — после смены она другая. Тогда узнаём ход по светлым
-            # кнопкам, но только как запасной признак: они светлые и во время анимаций, и раньше времени ходить нельзя
-            if time.monotonic() - start > LIGHT_BUTTONS_AFTER and self.eyes.abilities_active():
+                gone += 1
+                if gone >= 2:
+                    return None
+                time.sleep(0.3)
+                continue
+            gone = 0
+            if self._is_my_turn(start):
                 return "my_turn"
-            if self._page != 0 and time.monotonic() - flipped_at > 2:
-                arrow = self.eyes.sees("ability_prev")
-                if arrow is not None:
-                    self._press(arrow, "ability_prev (вернуться на первую страницу)")
-                    self._page -= 1
-                    flipped_at = time.monotonic()
+            time.sleep(0.25)
         return None
+
+    def _is_my_turn(self, waiting_since) -> bool:
+        """Свой ход. Главное — строка сообщений боя: «It's your turn» — наш ход, любой другой текст
+        («Spike uses Bite») — ещё идёт чужой ход или анимация. Если строка пустая — запасные признаки:
+        обученная картинка «Мой ход» (строгий порог) или, если долго ничего, светлые кнопки способностей."""
+        message = self.eyes.turn_message().lower()
+        if re.search(r"your\s*tur", message):
+            return True
+        if message:
+            return False
+        if self.eyes.sees_strictly("my_turn", MY_TURN_STRICT) is not None:
+            return True
+        return time.monotonic() - waiting_since > LIGHT_BUTTONS_AFTER and self.eyes.abilities_active()
 
     # ---- смена крита ----
 
@@ -919,6 +934,8 @@ class Bot:
 
     def _read_slots(self, species) -> list:
         ability_names = [a["name"] for a in species.abilities]
+        for name in species.names:
+            self._ability_names[name] = ability_names
         return [self.eyes.read_name(slot, ability_names) for slot in ABILITY_SLOTS]
 
     def _read_pages(self, species) -> list:
@@ -953,13 +970,42 @@ class Bot:
             self._sleep(0.5)
 
     def _use(self, ability: str, my_name: str):
-        for page_index, page in enumerate(self._pages[my_name]):
-            if ability in page:
-                self._goto_page(page_index)
-                slot = ABILITY_SLOTS[page.index(ability)]
+        """Нажать способность, проверяя глазами: игра сама сбрасывает страницу способностей между ходами,
+        поэтому не верим своему счётчику страниц — читаем кнопку, где должна быть способность, и если там не она,
+        определяем по надписям, какая страница открыта, листаем и проверяем снова."""
+        pages = self._pages[my_name]
+        target = next((i for i, page in enumerate(pages) if ability in page), None)
+        if target is None:
+            raise Stuck(f"не нашёл кнопку {ability}")
+        slot = ABILITY_SLOTS[pages[target].index(ability)]
+        names = self._ability_names.get(my_name, [ability])
+        for _ in range(MAX_ABILITY_PAGES + 2):
+            self.eyes.look()
+            if self.eyes.read_name(slot, names) == ability:
                 self._press(self.eyes.region(slot), ability)
+                self._page = target
                 return
-        raise Stuck(f"не нашёл кнопку {ability}")
+            current = self._visible_page(pages, names)
+            if current is None or current == target:
+                current = self._page if self._page != target else (target + 1 if target == 0 else target - 1)
+            arrow_id = "ability_next" if target > current else "ability_prev"
+            arrow = self.eyes.sees(arrow_id)
+            if arrow is None:
+                raise Stuck(f"не вижу {arrow_id}")
+            self._press(arrow, arrow_id)
+            self._page = current + (1 if target > current else -1)
+            self._sleep(0.5)
+        raise Stuck(f"не нашёл кнопку {ability} — пролистал все страницы")
+
+    def _visible_page(self, pages, names):
+        """Какая страница способностей сейчас открыта — по совпадению надписей на кнопках."""
+        seen = [self.eyes.read_name(slot, names) for slot in ABILITY_SLOTS]
+        best, score = None, 0
+        for i, page in enumerate(pages):
+            hits = sum(1 for a, b in zip(seen, page) if a and a == b)
+            if hits > score:
+                best, score = i, hits
+        return best
 
     def _use_any(self, names, my_name):
         self._use(random.choice(names), my_name)

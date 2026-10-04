@@ -9,6 +9,7 @@ from .screen import best_name, crop, find, find_scored, grab, parse_hp, parse_pe
 
 # уровень на панели крита — относительно обученной области имени (проверено на 2560×1440: 15 и 35)
 LEVEL_DX, LEVEL_DY, LEVEL_W, LEVEL_H = 236, -14, 44, 34
+MESSAGE_SPREAD = 420  # px влево и вправо от обученного «Мой ход»: строка сообщений боя длиннее снимка
 SPOT_THRESHOLD = 0.7  # точки поиска — куски пейзажа, им можно чуть меньше точности
 SPOT_MARGIN = 400  # камера ходит за персонажем, поэтому точка может сдвинуться заметно
 PIECE_THRESHOLD = 0.8
@@ -125,6 +126,18 @@ def camera_shift(image, location, anchors) -> tuple | None:
     return int(np.median([g[0] for g in best])), int(np.median([g[1] for g in best]))
 
 
+def text_rows(image) -> tuple:
+    """Строки снимка, где есть белый текст (± запас), — чтобы читать только строку сообщения, без соседних надписей."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    white = (hsv[:, :, 1] < 60) & (hsv[:, :, 2] > 200)
+    share = white.mean(axis=1)
+    rows = np.nonzero((share > 0.04) & (share < 0.6))[0]  # сплошная светлая полоса (край панели) — не текст
+    h = image.shape[0]
+    if len(rows) == 0:
+        return int(h * 0.25), int(h * 0.75)
+    return max(int(rows.min()) - 8, 0), min(int(rows.max()) + 8, h)
+
+
 class Eyes:
     def __init__(self, teaching, ocr, threshold: float, grabber=grab, ranks=None):
         self.teaching = teaching
@@ -233,6 +246,39 @@ class Eyes:
         if rect is None or self.ranks is None:
             return None
         return self.ranks.classify(crop(self.image, rect))
+
+    def message_band(self):
+        """Где строка сообщений боя: над кнопками способностей (от второй до четвёртой) — эти кнопки обучены всегда.
+        Если их нет — вокруг обученного «Мой ход»."""
+        slots = [self.region(k) for k in ("ability_1", "ability_2", "ability_4")]
+        if all(slots):
+            a1, a2, a4 = slots
+            return a2[0] - 60, a1[1] - 95, a4[0] + a4[2] - (a2[0] - 60), 55
+        snap = self.teaching.elements.get("my_turn")
+        if snap is None or snap.image is None:
+            return None
+        x, y, w, h = snap.rect
+        top, bottom = text_rows(snap.image)
+        return max(x - MESSAGE_SPREAD, 0), y + top, w + 2 * MESSAGE_SPREAD, bottom - top
+
+    def turn_message(self) -> str:
+        """Текст строки сообщений боя: «It's your turn!» — наш ход, «Spike uses Bite» — чужой."""
+        band = self.message_band()
+        if band is None or self.ocr is None or self.image is None:
+            return ""
+
+        def letters(texts):
+            for text in texts:
+                if sum(ch.isalpha() for ch in text) >= 4:
+                    return " ".join(text.split())
+            return None
+        return self.ocr.read(crop(self.image, band), letters) or ""
+
+    def sees_strictly(self, element_id: str, threshold: float):
+        snap = self.teaching.elements.get(element_id)
+        if snap is None or snap.image is None:
+            return None
+        return find(self.image, snap.image, threshold, near=snap.rect)
 
     def abilities_active(self) -> bool:
         """Свой ход по цвету кнопок способностей: в свой ход они светлые — белые (обычные) или жёлтые
