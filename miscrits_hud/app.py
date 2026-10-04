@@ -47,19 +47,40 @@ def _tray_icon() -> QIcon:
     return QIcon(pixmap)
 
 
-def main() -> int:
-    home = app_dir()
+def setup_logging(home) -> None:
     sys.excepthook = lambda *exc: logging.critical("unhandled exception", exc_info=exc)
     logging.basicConfig(
         filename=home / "hud.log", level=logging.INFO, encoding="utf-8",
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    game = game_data_dir()
+
+
+def main() -> int:
+    home = app_dir()
+    setup_logging(home)
     app = QApplication(sys.argv)
     instance_lock = acquire_single_instance(home)
     if instance_lock is None:
         logging.info("another HUD is already running; exiting")
         return 0
+    hud = start_hud(app, home)
+    try:
+        return app.exec()
+    finally:
+        hud.shutdown()
+
+
+class Hud:
+    """Запущенный HUD: контроллер (коллекция), меню трея и остановка."""
+
+    def __init__(self, controller, menu, shutdown):
+        self.controller = controller
+        self.menu = menu
+        self.shutdown = shutdown
+
+
+def start_hud(app, home) -> Hud:
+    game = game_data_dir()
     pool = ThreadPoolExecutor(max_workers=2)
 
     icons = IconStore(game / "image_cache" / "miscrits", home / "icons")
@@ -173,9 +194,14 @@ def main() -> int:
     timer.start(TICK_MS)
     tick()
     logging.info("HUD started")
-    try:
-        return app.exec()
-    finally:
+
+    def shutdown():
+        timer.stop()
         for hotkey_id in (HK_TOGGLE, HK_REFRESH, HK_MOVE):
             hotkeys.unregister(hwnd, hotkey_id)
         pool.shutdown(wait=False, cancel_futures=True)
+
+    # Qt-объекты живут, пока на них есть ссылки: держим их у возвращаемого объекта.
+    hud = Hud(controller, menu, shutdown)
+    hud._keep = (window, tray, timer, quit_action)
+    return hud

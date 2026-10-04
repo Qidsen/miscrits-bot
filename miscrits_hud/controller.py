@@ -60,6 +60,11 @@ class Controller:
         self._names = dict(self._names)
         self._location = (self._player.location_id, self._player.area_id) if self._player else None
 
+    @property
+    def player(self):
+        """Последний ответ get_player (или из кэша прошлого запуска); None, пока данных нет."""
+        return self._player
+
     def request_refresh(self):
         self._manual = True
 
