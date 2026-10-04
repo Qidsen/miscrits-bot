@@ -406,6 +406,7 @@ class MainWindow(QMainWindow):
             foreground=lambda: hotkeys.foreground_process()[0],
             location_fn=lambda: self.hud.controller.location, companion=self.companion, game_rect_fn=game_rect_on_image,
         )
+        self.bot._move_mouse = lambda point: mouse.move_to(to_screen((point[0], point[1], 0, 0))[:2])
         self.bot.start()
         self._set_state("running", "Работает")
         self.substatus.setText("Переключитесь в игру — бот действует, только когда её окно активно")

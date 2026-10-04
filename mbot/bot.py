@@ -88,6 +88,7 @@ class Bot:
         game_rect_fn() -> окно игры (x, y, w, h) в координатах скриншота."""
         self.eyes = eyes
         self._press_key = press_key  # подменяется в тестах: настоящие нажатия клавиш там не нужны
+        self._move_mouse = None  # (x, y) на скриншоте -> подвести курсор; задаёт окно программы
         self._location_fn = location_fn
         self._companion = companion
         self._game_rect_fn = game_rect_fn
@@ -711,10 +712,22 @@ class Bot:
                               Action(ATTACK, move), None, False, why)
             self._use(move.name, my_name)
             last = (my_name, move, hp[0]) if hp else None
+            self._park_mouse()
             self._sleep(1.0)
         self._emit("battle_end", None)
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
         return enemy
+
+    def _park_mouse(self):
+        """Увести курсор с кнопок способностей: иначе игра показывает подсказку («Attack Power…»),
+        она закрывает строку «It's your turn!», и бот не узнаёт свой ход."""
+        if self._move_mouse is None or self._game_rect_fn is None:
+            return
+        game = self._game_rect_fn()
+        if game is None:
+            return
+        x, y, w, h = game
+        self._move_mouse((int(x + w * random.uniform(0.35, 0.65)), int(y + h * random.uniform(0.25, 0.45))))
 
     def _wait_turn(self):
         """Ждёт своего хода (или конца боя). «Мой ход» часто обучен на кнопке способности первой страницы —
@@ -751,10 +764,11 @@ class Bot:
         («Spike uses Bite») — ещё идёт чужой ход или анимация. Если строка пустая — запасные признаки:
         обученная картинка «Мой ход» (строгий порог) или, если долго ничего, светлые кнопки способностей."""
         message = self.eyes.turn_message().lower()
-        if re.search(r"your\s*tur", message):
+        if re.search(r"\byour\b|s your|your tur", message):
             return True
-        if message:
-            return False
+        if re.search(r"\buses?\b|\bused\b|\bmissed\b|\bturns?\b", message):
+            return False  # «Spike uses Bite» и т.п. — идёт чужой ход или анимация
+        # строка пустая или нечитаемая (например, её закрыла подсказка) — запасные признаки
         if self.eyes.sees_strictly("my_turn", MY_TURN_STRICT) is not None:
             return True
         return time.monotonic() - waiting_since > LIGHT_BUTTONS_AFTER and self.eyes.abilities_active()
