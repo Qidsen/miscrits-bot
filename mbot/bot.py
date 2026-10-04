@@ -28,6 +28,8 @@ MAX_ABILITY_PAGES = 5
 WALK_STEPS = 14
 CLICK_HALF = 14
 MISS_RETRIES = 2
+EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
+EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
 BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
 SUMMARY_MAX_WAIT = 2.0  # с: дольше анимация опыта в сводке не идёт
@@ -613,7 +615,15 @@ class Bot:
                     continue
                 move = action.move
             else:
-                move = self._first_ability(my_name, moves) if self.settings.kill_with_first else None
+                move = None
+                if self.settings.explore_damage and my_ratio > EXPLORE_MIN_HP:
+                    # убивать можно — заодно пробуем атаку, по которой меньше всего данных против этой стихии
+                    least = min(moves, key=lambda m: self.hits.observed(my_name, m, target_element))
+                    if self.hits.observed(my_name, least, target_element) < EXPLORE_ENOUGH:
+                        move = least
+                        self._state(f"изучаю урон: {least.name}")
+                if move is None and self.settings.kill_with_first:
+                    move = self._first_ability(my_name, moves)
                 if move is None:
                     move = choose_kill(moves, self.hits, my_name, target_element)
             self._use(move.name, my_name)

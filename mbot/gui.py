@@ -50,6 +50,7 @@ SETTING_LABELS = {
     "break_len_max": "Длина перерыва до, мин",
     "session_limit_min": "Лимит сессии, мин (0 — без лимита)",
     "kill_with_first": "Добивать первой способностью (обычно она лечит)",
+    "explore_damage": "Изучать урон в обычных боях (пробовать разные атаки)",
     "spot_cooldown": "Кулдаун точки поиска (с момента клика), с",
     "heal_below": "Идти лечиться, если HP ниже, %",
     "plat_capture_limit": "Платиновых попыток за бой (Exotic/Legendary)",
@@ -72,7 +73,7 @@ def to_pixmap(image, max_w=160, max_h=60) -> QPixmap:
 SETTING_GROUPS = (
     ("Поведение и перерывы", ("delay_min", "delay_max", "break_every_min", "break_every_max",
                               "break_len_min", "break_len_max", "session_limit_min")),
-    ("Охота и бой", ("spot_cooldown", "kill_with_first", "capture_hp_floor", "capture_min_chance", "plat_capture_limit",
+    ("Охота и бой", ("spot_cooldown", "kill_with_first", "explore_damage", "capture_hp_floor", "capture_min_chance", "plat_capture_limit",
                      "heal_below", "train_every")),
     ("Распознавание", ("match_threshold", "button_size", "tesseract_cmd")),
 )

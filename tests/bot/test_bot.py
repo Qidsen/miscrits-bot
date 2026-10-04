@@ -316,3 +316,24 @@ def test_farm_uses_all_zone_markers_when_no_targets(tmp_path):
     assert bot._map_targets() is None  # целей нет — охоты по целям нет
     location, markers = bot._map_targets(farm=True)
     assert [m.name for m in markers] == ["Fubby"]  # Batty в другой зоне (чердак)
+
+
+def test_kill_battle_explores_until_element_is_known(tmp_path):
+    from mbot.brain.combat import Move
+
+    def run(known):
+        turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
+        eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
+        owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
+        bot, clicks = make_bot(eyes, tmp_path / str(known), owned)
+        (tmp_path / str(known)).mkdir(exist_ok=True)
+        if known:
+            for _ in range(3):  # Physical по Fire уже изучен
+                bot.hits.record("Patriot", 35, Move("Smack", 7, 1, 100, "Physical"), "Flue", "Fire", 12, 50, 10)
+        states = []
+        bot._state = states.append
+        bot._battle()
+        return states
+
+    assert any("изучаю урон" in s for s in run(False))
+    assert not any("изучаю урон" in s for s in run(True))
