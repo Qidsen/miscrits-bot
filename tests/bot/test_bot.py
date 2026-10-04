@@ -213,3 +213,18 @@ def test_caught_target_is_skipped(tmp_path):
     assert [m.name for m in markers] == ["Keeper"]
     bot.stats.catches.append((538, "B"))  # поймали и Keeper
     assert bot._map_targets() is None
+
+
+def test_trains_while_train_button_lit(tmp_path):
+    from mbot.storage import Step
+
+    eyes = FakeEyes([{"see": set()}])
+    eyes.teaching.elements["train_ready"] = Snapshot((0, 0, 5, 5))
+    eyes.teaching.routes["train"] = [Step(Snapshot((0, 0, 5, 5)))]
+    lit = iter([True, True, False])
+    bot, _ = make_bot(eyes, tmp_path)
+    eyes.sees = lambda element_id: (1, 1, 5, 5) if element_id == "train_ready" and next(lit, False) else None
+    routes = []
+    bot._run_route = routes.append
+    bot._after_battle(None, None, False, 0, 1.0)
+    assert routes == ["train", "train"] and bot.stats.trainings == 2

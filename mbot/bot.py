@@ -24,6 +24,7 @@ MAX_ABILITY_PAGES = 5
 WALK_STEPS = 14
 CLICK_HALF = 14
 MISS_RETRIES = 2
+MAX_TRAININGS = 4  # критов в команде
 
 
 class Stopped(Exception):
@@ -673,9 +674,14 @@ class Bot:
             self._press(rect, found)
             self._sleep(0.8)
         self._publish_stats()
-        if self._should_train():
+        # опыт получает вся команда, готовыми могут оказаться сразу несколько — тренируем, пока подсвечено
+        for _ in range(MAX_TRAININGS):
+            if not self._should_train():
+                break
             self._run_route("train")
             self.stats.trainings += 1
+            if not self.eyes.knows("train_ready"):
+                break  # без подсветки не видно, остался ли кто-то, — по одному разу за N боёв
         if my_ratio * 100 < self.settings.heal_below:
             self._say(f"HP {my_ratio:.0%} — иду лечиться")
             self._run_route("heal")
