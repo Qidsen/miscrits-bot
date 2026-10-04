@@ -31,6 +31,7 @@ class Settings:
     button_size: int = 110        # сторона квадрата, который снимается вокруг курсора по F4
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     kill_with_first: bool = True  # добивать первой способностью (у многих она лечит)
+    explore_switch: bool = True   # в части боёв «на убой» пробовать других критов команды (нужны «Крит в команде 1–3»)
     explore_damage: bool = True   # в боях «на убой» пробовать атаки, по которым мало данных
     hunt_targets: list = field(default_factory=list)  # имена видов (names[0]) — цели охоты
 

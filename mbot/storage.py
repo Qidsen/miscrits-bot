@@ -40,6 +40,11 @@ ELEMENTS = (
     ElementDef("capture_chance", REGION, False, "Шанс поимки", "Процент шанса поимки."),
     ElementDef("plat_capture", BUTTON, False, "Платиновая поимка", "Кнопка поимки за платину."),
     ElementDef("captured", BUTTON, False, "Поймали!", "Элемент окна успешной поимки (например, кнопка Keep)."),
+    ElementDef("team_1", REGION, False, "Крит в команде 1", "В бою: первый портрет в столбике команды слева (рамкой)."),
+    ElementDef("team_2", REGION, False, "Крит в команде 2", "В бою: второй портрет в столбике команды."),
+    ElementDef("team_3", REGION, False, "Крит в команде 3", "В бою: третий портрет в столбике команды."),
+    ElementDef("switch_confirm", BUTTON, False, "Подтвердить смену крита",
+               "Кнопка подтверждения в окне, которое появляется после клика по портрету в бою."),
     ElementDef("battle_won", BUTTON, True, "Конец боя", "Кнопка Continue после боя."),
     ElementDef("come_back_later", BUTTON, False, "Точка на кулдауне",
                "Необязательно: бот сам считает кулдаун точек. Надпись «Come back later!» нужна только для подстраховки."),
@@ -54,6 +59,7 @@ ELEMENTS = (
 ELEMENT_BY_ID = {e.id: e for e in ELEMENTS}
 POPUPS = ("popup_1", "popup_2", "popup_3", "popup_4")
 ABILITY_SLOTS = ("ability_1", "ability_2", "ability_3", "ability_4")
+TEAM_SLOTS = ("team_1", "team_2", "team_3")
 ROUTES = {"train": "Тренировка", "heal": "Лечение (до хила и обратно)"}
 
 

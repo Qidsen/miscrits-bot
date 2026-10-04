@@ -18,7 +18,7 @@ from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
 from .screen import find
-from .storage import ABILITY_SLOTS, POPUPS
+from .storage import ABILITY_SLOTS, POPUPS, TEAM_SLOTS
 from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
 
 log = logging.getLogger(__name__)
@@ -31,6 +31,9 @@ MISS_RETRIES = 2
 EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
+EXPLORE_SWITCH_CHANCE = 0.3  # доля боёв «на убой», в которых пробуем другого крита команды
+PORTRAIT_MATCH = 0.8  # насколько портрет в столбике должен совпасть с запомненным
+SWITCH_FAR = 0.15  # смена ради поимки — только если до порога HP ещё больше 15% макс. HP цели
 BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
 SUMMARY_MAX_WAIT = 2.0  # с: дольше анимация опыта в сводке не идёт
 SUMMARY_STILL = 12  # изменившихся пикселей (в уменьшенном кадре), меньше которых сводка неподвижна
@@ -84,6 +87,7 @@ class Bot:
         self._locators = {}
         self._marker_used = {}
         self._all_caught_said = False
+        self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
         self._train_seen = None  # что сказала сводка последнего боя про тренировку  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
         self._catalog_fn = catalog_fn
@@ -528,6 +532,8 @@ class Bot:
         last = None  # (имя моего крита, Move, HP противника до удара)
         my_ratio = 1.0
         captured = False
+        switched = None  # портрет, по которому кликнули для смены, — узнаем, чей он, на следующем ходу
+        explore_switch_done = False
         self._state("бой")
         while True:
             turn, _ = self._wait_for(("my_turn", "battle_won", "captured"), timeout=60, while_visible="battle")
@@ -570,6 +576,10 @@ class Bot:
                 my_ratio = mine[0] / mine[1]
             my_name = self.eyes.read_name("my_name", by_name)
             me = by_name.get(my_name)
+            if switched is not None and my_name:
+                self._portraits[my_name] = switched  # теперь знаем, чей это портрет
+                self._say(f"сменил крита: теперь {my_name}")
+                switched = None
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name:
                 self.hits.record(last[0], self.eyes.read_level("my"), last[1], enemy.names[0] if enemy else "?",
@@ -591,6 +601,16 @@ class Bot:
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
                                         self.settings.capture_min_chance, (can_capture or plat) is not None,
                                         precious=precious, floor=self.settings.capture_hp_floor)
+                if action.kind in (CAPTURE, STALL) and hp and hp[0] - self.settings.capture_hp_floor > SWITCH_FAR * hp[1]:
+                    # у текущего крита нет удара, безопасно приближающего цель к порогу, а до порога далеко —
+                    # ищем в команде того, у кого такой удар есть
+                    better = self._better_catcher(my_name, by_name, target_element, hp, precious)
+                    if better is not None:
+                        slot, name = better
+                        self._say(f"меняю {my_name} на {name}: у него есть безопасный удар")
+                        switched = self._switch(slot)
+                        last = None
+                        continue
                 if action.kind == CAPTURE:
                     if can_capture is not None:
                         self._press(can_capture, "capture")
@@ -616,6 +636,16 @@ class Bot:
                 move = action.move
             else:
                 move = None
+                if (not explore_switch_done and self.settings.explore_switch and my_ratio > EXPLORE_MIN_HP
+                        and random.random() < EXPLORE_SWITCH_CHANCE):
+                    explore_switch_done = True
+                    slot = self._least_known_slot()
+                    if slot is not None:
+                        self._state("изучаю урон: пробую другого крита команды")
+                        switched = self._switch(slot)
+                        last = None
+                        continue
+                explore_switch_done = True
                 if self.settings.explore_damage and my_ratio > EXPLORE_MIN_HP:
                     # убивать можно — заодно пробуем атаку, по которой меньше всего данных против этой стихии
                     least = min(moves, key=lambda m: self.hits.observed(my_name, m, target_element))
@@ -631,6 +661,69 @@ class Bot:
             self._sleep(1.0)
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
         return enemy
+
+    # ---- смена крита ----
+
+    def _team(self):
+        return [slot for slot in TEAM_SLOTS if self.eyes.knows(slot)]
+
+    def _portrait(self, slot):
+        rect = self.eyes.region(slot)
+        x, y, w, h = rect
+        return self.eyes.image[y:y + h, x:x + w].copy()
+
+    def _who_in(self, slot):
+        """Чей портрет сейчас в этой ячейке столбика (по запомненным портретам) или None."""
+        image = self._portrait(slot)
+        best, score = None, PORTRAIT_MATCH
+        for name, portrait in self._portraits.items():
+            if portrait.shape != image.shape:
+                continue
+            s = float(cv2.matchTemplate(image, portrait, cv2.TM_CCOEFF_NORMED).max())
+            if s >= score:
+                best, score = name, s
+        return best
+
+    def _switch(self, slot):
+        """Клик по портрету + подтверждение. Ход тратится — результат увидим на следующем ходу.
+        Возвращает картинку портрета, чтобы потом запомнить, чей он."""
+        portrait = self._portrait(slot)
+        self._press(self.eyes.region(slot), f"смена крита ({slot})")
+        if self.eyes.knows("switch_confirm"):
+            found, rect = self._wait_for(("switch_confirm",), timeout=3)
+            if rect is not None:
+                self._press(rect, "подтвердить смену")
+        self._page = 0
+        self._sleep(1.0)
+        return portrait
+
+    def _least_known_slot(self):
+        """Ячейка с критом, по которому меньше всего ударов в журнале (незнакомые — первыми)."""
+        slots = self._team()
+        if not slots:
+            return None
+        def known(slot):
+            name = self._who_in(slot)
+            return -1 if name is None else sum(1 for h in self.hits.hits if h.attacker == name)
+        return min(slots, key=lambda s: (known(s), random.random()))
+
+    def _better_catcher(self, my_name, by_name, target_element, hp, precious):
+        """(ячейка, имя) крита команды, у которого есть безопасный удар, приближающий цель к порогу, или None.
+        Смотрим только критов, чьи способности бот уже видел (читал их кнопки)."""
+        for slot in self._team():
+            name = self._who_in(slot)
+            if not name or name == my_name or name not in self._pages:
+                continue
+            species = by_name.get(name)
+            if species is None:
+                continue
+            names = {n for page in self._pages[name] for n in page if n}
+            moves = moves_from_catalog(species.abilities, names)
+            action = choose_capture(moves, self.hits, name, target_element, hp[0], hp[1], None, 101, True,
+                                    precious=precious, floor=self.settings.capture_hp_floor)
+            if action.kind == ATTACK:
+                return slot, name
+        return None
 
     def _first_ability(self, my_name, moves):
         """Первая способность на первой странице, если это атака (у многих критов она лечит)."""

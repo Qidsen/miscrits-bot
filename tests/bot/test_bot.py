@@ -337,3 +337,26 @@ def test_kill_battle_explores_until_element_is_known(tmp_path):
 
     assert any("изучаю урон" in s for s in run(False))
     assert not any("изучаю урон" in s for s in run(True))
+
+
+def test_switches_to_crit_with_safe_hit_when_catching(tmp_path):
+    from mbot.brain.combat import Move
+
+    turn = {"see": {"battle", "my_turn", "capture"}, "enemy_hp": (60, 60), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn] * 3 + [{"see": {"captured"}}, {"see": set()}], enemy="Goldy")
+    eyes.teaching.elements["team_1"] = Snapshot((500, 0, 10, 10))
+    bot, clicks = make_bot(eyes, tmp_path)
+    bot.settings.explore_switch = False
+    weak = Species(5, ("Weakling",), "Fire", "Common", {},
+                   ({"name": "Poke", "ap": 3, "type": "Attack", "element": "Physical"},))
+    bot._catalog_fn = lambda: Catalog([ME, FLUE, GOLD, weak])
+    bot._pages["Weakling"] = [["Poke", None, None, None]]
+    bot._who_in = lambda slot: "Weakling"
+    for _ in range(3):  # Patriot бьёт Goldy сильно (60 из 60), Weakling — по 6
+        bot.hits.record("Patriot", 35, Move("Smack", 7, 1, 100, "Physical"), "Goldy", "Earth", 12, 60, 60)
+        bot.hits.record("Patriot", 35, Move("Bash", 15, 1, 100, "Physical"), "Goldy", "Earth", 12, 60, 60)
+        bot.hits.record("Weakling", 5, Move("Poke", 3, 1, 100, "Physical"), "Goldy", "Earth", 12, 60, 6)
+    switches = []
+    bot._switch = lambda slot: switches.append(slot)
+    bot._battle()
+    assert switches == ["team_1"]
