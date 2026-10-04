@@ -275,6 +275,7 @@ class MainWindow(QMainWindow):
             self.stat_labels[key] = value
         self.stat_labels["time"].setText("0:00")
         v.addLayout(cards)
+        v.addWidget(self._battle_card())
 
         self.checks = QLabel("")
         self.checks.setWordWrap(True)
@@ -287,6 +288,71 @@ class MainWindow(QMainWindow):
         self.events.setAlternatingRowColors(True)
         v.addWidget(self.events, 1)
         return w
+
+    def _battle_card(self) -> QWidget:
+        """Что бот видит в бою и почему так ходит."""
+        card = QFrame()
+        card.setObjectName("card")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(16, 12, 16, 12)
+        self.battle_title = QLabel("⚔  Сейчас не в бою")
+        self.battle_title.setObjectName("sectionTitle")
+        v.addWidget(self.battle_title)
+        self.battle_sides = QLabel("")
+        self.battle_sides.setWordWrap(True)
+        v.addWidget(self.battle_sides)
+        self.battle_moves = QTableWidget(0, 7)
+        self.battle_moves.setHorizontalHeaderLabels(["Атака", "Стихия", "× стихии", "Ожидаемо", "Худший случай",
+                                                     "Ударов видел", "Вердикт"])
+        self.battle_moves.verticalHeader().setVisible(False)
+        self.battle_moves.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.battle_moves.setSelectionMode(QAbstractItemView.NoSelection)
+        self.battle_moves.setShowGrid(False)
+        self.battle_moves.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.battle_moves.setMaximumHeight(170)
+        v.addWidget(self.battle_moves)
+        self.battle_action = QLabel("")
+        self.battle_action.setWordWrap(True)
+        self.battle_action.setObjectName("bigState")
+        v.addWidget(self.battle_action)
+        return card
+
+    def _show_battle(self, info):
+        mode = "ЛОВИМ" if info["mode"] == "capture" else "убиваем"
+        color = theme.ACCENT if info["mode"] == "capture" else theme.MUTED
+        self.battle_title.setText(f"⚔  Бой — <span style='color:{color}'>{mode}</span>")
+        rarity = info["rarity"]
+        enemy = (f"<b>{info['enemy']}</b> <span style='color:{theme.RARITY_COLORS.get(rarity, theme.MUTED)}'>"
+                 f"{rarity}</span> <b style='color:{theme.rank_color(info['rank'] or '')}'>{info['rank'] or '?'}</b>"
+                 f" · ур. {info['level'] or '?'}")
+        hp = info["hp"]
+        if hp:
+            share = hp[0] / hp[1] if hp[1] else 0
+            bar_color = theme.GREEN if share > 0.5 else (theme.ACCENT if share > 0.2 else theme.RED)
+            enemy += f" · HP <b style='color:{bar_color}'>{hp[0]}/{hp[1]}</b>"
+            if info["mode"] == "capture":
+                enemy += f" <span style='color:{theme.MUTED}'>(подводим до {info['floor']})</span>"
+        mine = info["my_hp"]
+        me = f"Мой: <b>{info['me']}</b>" + (f" · HP {mine[0]}/{mine[1]}" if mine else "")
+        self.battle_sides.setText(f"{enemy}<br>{me}<br><span style='color:{theme.MUTED}'>{info['reason']}</span>")
+        self.battle_moves.setRowCount(len(info["moves"]))
+        for i, m in enumerate(info["moves"]):
+            mult = m["mult"]
+            cells = (m["name"], m["element"], f"×{mult:g}", f"{m['expected']:.0f}", f"{m['worst']:.0f}",
+                     str(m["seen"]), m["verdict"])
+            for col, value in enumerate(cells):
+                item = QTableWidgetItem(value)
+                if col == 1:
+                    item.setForeground(QColor(theme.element_color(m["element"])))
+                elif col == 2:
+                    item.setForeground(QColor(theme.GREEN if mult > 1 else (theme.RED if mult < 1 else theme.MUTED)))
+                elif col == 6:
+                    v = m["verdict"]
+                    item.setForeground(QColor(theme.ACCENT if v.startswith("выбрана") else
+                                              theme.GREEN if "безопасно" in v else
+                                              theme.RED if v else theme.MUTED))
+                self.battle_moves.setItem(i, col, item)
+        self.battle_action.setText("→ " + info["action"])
 
     def _readiness(self) -> list:
         problems = []
@@ -371,6 +437,10 @@ class MainWindow(QMainWindow):
             self.hunt_map.setText(data)
         elif kind == "locmap":
             self._show_locmap(*data)
+        elif kind == "battle":
+            self._show_battle(data)
+        elif kind == "battle_end":
+            self.battle_title.setText("⚔  Сейчас не в бою")
         elif kind == "stats":
             self._show_stats(data)
             self._hunt_summary()

@@ -12,7 +12,8 @@ import cv2
 import numpy as np
 
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
-from .brain.combat import ATTACK, STALL, DamageModel, choose_capture, choose_kill, moves_from_catalog
+from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, STALL, Action, DamageModel, choose_capture,
+                           choose_kill, moves_from_catalog, multiplier)
 from .brain.hits import HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
@@ -81,6 +82,7 @@ class Bot:
         location_fn() -> (локация, зона) | None; companion — карты и маркеры сайта;
         game_rect_fn() -> окно игры (x, y, w, h) в координатах скриншота."""
         self.eyes = eyes
+        self._press_key = press_key  # подменяется в тестах: настоящие нажатия клавиш там не нужны
         self._location_fn = location_fn
         self._companion = companion
         self._game_rect_fn = game_rect_fn
@@ -88,6 +90,7 @@ class Bot:
         self._marker_used = {}
         self._all_caught_said = False
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
+        self._switch_broken = False
         self._train_seen = None  # что сказала сводка последнего боя про тренировку  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
         self._catalog_fn = catalog_fn
@@ -532,11 +535,11 @@ class Bot:
         last = None  # (имя моего крита, Move, HP противника до удара)
         my_ratio = 1.0
         captured = False
-        switched = None  # портрет, по которому кликнули для смены, — узнаем, чей он, на следующем ходу
+        switched = None  # (портрет, кто был до смены) — на следующем ходу узнаем, получилось ли
         explore_switch_done = False
         self._state("бой")
         while True:
-            turn, _ = self._wait_for(("my_turn", "battle_won", "captured"), timeout=60, while_visible="battle")
+            turn = self._wait_turn()
             if turn is None:
                 self.eyes.look()
                 if self.eyes.sees("battle") is None:
@@ -577,9 +580,17 @@ class Bot:
             my_name = self.eyes.read_name("my_name", by_name)
             me = by_name.get(my_name)
             if switched is not None and my_name:
-                self._portraits[my_name] = switched  # теперь знаем, чей это портрет
-                self._say(f"сменил крита: теперь {my_name}")
+                portrait, before = switched
                 switched = None
+                if my_name == before:
+                    # крит не сменился (окно подтверждения не нашлось или не сработало) — закрываем окно
+                    # и до конца сессии не пробуем: чужой портрет не запоминаем
+                    self._press_key(VK_ESCAPE)
+                    self._switch_broken = True
+                    self._say("⚠ смена крита не сработала — до конца сессии без смен (проверьте «Подтвердить смену крита»)")
+                    continue
+                self._portraits[my_name] = portrait  # теперь знаем, чей это портрет
+                self._say(f"сменил крита: теперь {my_name}")
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name:
                 self.hits.record(last[0], self.eyes.read_level("my"), last[1], enemy.names[0] if enemy else "?",
@@ -606,11 +617,13 @@ class Bot:
                     # ищем в команде того, у кого такой удар есть
                     better = self._better_catcher(my_name, by_name, target_element, hp, precious)
                     if better is not None:
-                        slot, name = better
-                        self._say(f"меняю {my_name} на {name}: у него есть безопасный удар")
-                        switched = self._switch(slot)
+                        slot, name, reason = better
+                        self._say(f"меняю {my_name} на {name}: {reason}")
+                        switched = (self._switch(slot), my_name)
                         last = None
                         continue
+                self._explain(enemy, rank, hp, my_name, mine, moves, target_element, decision, action, chance,
+                              precious)
                 if action.kind == CAPTURE:
                     if can_capture is not None:
                         self._press(can_capture, "capture")
@@ -641,8 +654,9 @@ class Bot:
                     explore_switch_done = True
                     slot = self._least_known_slot()
                     if slot is not None:
-                        self._state("изучаю урон: пробую другого крита команды")
-                        switched = self._switch(slot)
+                        who = self._who_in(slot) or "незнакомого крита"
+                        self._say(f"убиваем, можно поучиться: пробую {who} — по нему мало данных об уроне")
+                        switched = (self._switch(slot), my_name)
                         last = None
                         continue
                 explore_switch_done = True
@@ -656,15 +670,45 @@ class Bot:
                     move = self._first_ability(my_name, moves)
                 if move is None:
                     move = choose_kill(moves, self.hits, my_name, target_element)
+                    why = "самая сильная атака по ожиданию"
+                elif self._first_ability(my_name, moves) is move:
+                    why = "первая способность (лечит)"
+                else:
+                    why = f"изучаю урон: по {move.element} → {target_element or '?'} мало данных"
+                self._explain(enemy, rank, hp, my_name, mine, moves, target_element, decision,
+                              Action(ATTACK, move), None, False, why)
             self._use(move.name, my_name)
             last = (my_name, move, hp[0]) if hp else None
             self._sleep(1.0)
+        self._emit("battle_end", None)
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
         return enemy
+
+    def _wait_turn(self):
+        """Ждёт своего хода (или конца боя). «Мой ход» часто обучен на кнопке способности первой страницы —
+        если после удара со второй страницы она так и открыта, ход не узнаётся; тогда листаем назад."""
+        end = time.monotonic() + 60
+        flipped_at = time.monotonic()
+        while time.monotonic() < end:
+            turn, _ = self._wait_for(("my_turn", "battle_won", "captured"), timeout=3, while_visible="battle")
+            if turn is not None:
+                return turn
+            self.eyes.look()
+            if self.eyes.sees("battle") is None:
+                return None
+            if self._page != 0 and time.monotonic() - flipped_at > 2:
+                arrow = self.eyes.sees("ability_prev")
+                if arrow is not None:
+                    self._press(arrow, "ability_prev (вернуться на первую страницу)")
+                    self._page -= 1
+                    flipped_at = time.monotonic()
+        return None
 
     # ---- смена крита ----
 
     def _team(self):
+        if self._switch_broken or not self.eyes.knows("switch_confirm"):
+            return []  # без подтверждения смена не пройдёт — не пробуем
         return [slot for slot in TEAM_SLOTS if self.eyes.knows(slot)]
 
     def _portrait(self, slot):
@@ -690,7 +734,7 @@ class Bot:
         portrait = self._portrait(slot)
         self._press(self.eyes.region(slot), f"смена крита ({slot})")
         if self.eyes.knows("switch_confirm"):
-            found, rect = self._wait_for(("switch_confirm",), timeout=3)
+            found, rect = self._wait_for(("switch_confirm",), timeout=6)
             if rect is not None:
                 self._press(rect, "подтвердить смену")
         self._page = 0
@@ -722,8 +766,48 @@ class Bot:
             action = choose_capture(moves, self.hits, name, target_element, hp[0], hp[1], None, 101, True,
                                     precious=precious, floor=self.settings.capture_hp_floor)
             if action.kind == ATTACK:
-                return slot, name
+                expected, worst = self.hits.estimate(name, action.move, target_element, hp[1])
+                return slot, name, (f"у него {action.move.name}: ожидаемо {expected:.0f}, худший случай {worst:.0f} — "
+                                    f"у цели {hp[0]} HP, останется не меньше {self.settings.capture_hp_floor}")
         return None
+
+    def _explain(self, enemy, rank, hp, my_name, mine, moves, target_element, decision, action, chance, precious,
+                 why=None):
+        """Что бот видит и почему так ходит — в «События» и в карточку «Текущий бой»."""
+        floor = self.settings.capture_hp_floor
+        rows = []
+        for m in moves:
+            expected, worst = self.hits.estimate(my_name, m, target_element, hp[1] if hp else None)
+            seen = self.hits.observed(my_name, m, target_element)
+            if decision.action == CAPTURE and hp:
+                worst_used = worst * (PRECIOUS_EXTRA if precious else 1)
+                ok = worst_used <= hp[0] - floor and (not precious or seen >= PRECIOUS_SEEN)
+                verdict = "безопасно" if ok else ("мало данных" if precious and seen < PRECIOUS_SEEN else "может добить")
+            else:
+                verdict = ""
+            if action.move is m:
+                verdict = "выбрана" + (f" · {verdict}" if verdict else "")
+            rows.append({"name": m.name, "element": m.element, "mult": multiplier(m.element, target_element),
+                         "expected": expected, "worst": worst, "seen": seen, "verdict": verdict})
+        if action.kind == CAPTURE:
+            text = (f"ловлю: шанс {chance}% ≥ {self.settings.capture_min_chance}%" if chance is not None
+                    and chance >= self.settings.capture_min_chance else
+                    f"ловлю: безопасных ударов нет — любой может опустить ниже {floor} HP (шанс {chance if chance is not None else '?'}%)")
+        elif action.kind == STALL:
+            text = "пропускаю удар: любой может добить, а поймать сейчас нельзя — безопасная способность"
+        else:
+            row = next(r for r in rows if r["name"] == action.move.name)
+            text = f"{action.move.name}: ожидаемо {row['expected']:.0f}, худший случай {row['worst']:.0f}"
+            if decision.action == CAPTURE and hp:
+                text += f" — у цели {hp[0]} HP, останется не меньше {floor} → бью"
+            elif why:
+                text += f" — {why}"
+        self._say(text)
+        self._emit("battle", {
+            "enemy": enemy.names[0] if enemy else "?", "rarity": enemy.rarity if enemy else "", "rank": rank,
+            "level": self.hits.level, "hp": hp, "me": my_name, "my_hp": mine, "mode": decision.action,
+            "reason": decision.reason, "moves": rows, "action": text, "floor": floor,
+        })
 
     def _first_ability(self, my_name, moves):
         """Первая способность на первой странице, если это атака (у многих критов она лечит)."""
@@ -918,7 +1002,7 @@ class Bot:
             trained += 1
         self._say(f"натренировано: {trained}" if trained else "тренировать некого — закрываю окно")
         if not self._click_step(close_step, timeout=4):
-            press_key(VK_ESCAPE)
+            self._press_key(VK_ESCAPE)
         self._sleep(0.8)
         return trained
 

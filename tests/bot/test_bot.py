@@ -92,6 +92,7 @@ def make_bot(eyes, tmp_path, player=None):
     bot = Bot(eyes, lambda rect: clicks.append(rect), lambda: Catalog([ME, FLUE, GOLD]), lambda: player,
               Settings(delay_min=0, delay_max=0), tmp_path / "learn.json", Path(tmp_path))
     bot._sleep = lambda s: None
+    bot._press_key = lambda vk: None
     bot._schedule_break()
     return bot, clicks
 
@@ -345,6 +346,7 @@ def test_switches_to_crit_with_safe_hit_when_catching(tmp_path):
     turn = {"see": {"battle", "my_turn", "capture"}, "enemy_hp": (60, 60), "my_hp": (100, 100)}
     eyes = FakeEyes([turn] * 3 + [{"see": {"captured"}}, {"see": set()}], enemy="Goldy")
     eyes.teaching.elements["team_1"] = Snapshot((500, 0, 10, 10))
+    eyes.teaching.elements["switch_confirm"] = Snapshot((600, 0, 10, 10))
     bot, clicks = make_bot(eyes, tmp_path)
     bot.settings.explore_switch = False
     weak = Species(5, ("Weakling",), "Fire", "Common", {},
