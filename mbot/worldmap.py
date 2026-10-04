@@ -18,7 +18,6 @@ SITE = "https://qidsen.github.io/miscrits-companion/data/"
 REFRESH_DAYS = 7
 SCALES = np.arange(0.10, 0.80, 0.02)  # «пикселей карты на пиксель экрана», первый поиск
 COARSE = 0.25  # первый поиск — по уменьшенной карте
-GOOD_SCORE = 0.6
 NEAR_WINDOW = 500  # px карты вокруг прошлого места для быстрого поиска
 
 
@@ -124,9 +123,16 @@ def _match(world, template):
     return float(score), loc
 
 
+TILE_COLS, TILE_ROWS = 3, 2
+TILE_SCORE = 0.7
+AGREE_PX = 8  # px карты: насколько должны сойтись куски, чтобы им поверить
+MIN_AGREE = 2
+
+
 class Locator:
-    """Ищет кусок экрана на карте. Масштаб узнаётся один раз (он зависит только от разрешения),
-    дальше ищем рядом с прошлым местом — это быстро."""
+    """Ищет экран на карте по кускам. Каждый кусок ищется отдельно, положению верим, если хотя бы два
+    куска с ним согласны: так не мешают персонаж, HUD поверх игры, надписи и край мира (у края часть экрана
+    показывает то, чего на карте сайта нет). Масштаб узнаётся один раз, дальше ищем рядом с прошлым местом."""
 
     def __init__(self, world, scale: float | None = None):
         self.world = world
@@ -134,57 +140,72 @@ class Locator:
         self.last = None
         self._small = cv2.resize(world, None, fx=COARSE, fy=COARSE, interpolation=cv2.INTER_AREA)
 
-    def _at(self, view, scale, area=None):
-        template = cv2.resize(view, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-        if area is None:
-            score, (x, y) = _match(self.world, template)
-            return Placement(scale, x, y, score)
-        x0, y0, x1, y1 = area
-        score, (x, y) = _match(self.world[y0:y1, x0:x1], template)
-        return Placement(scale, x0 + x, y0 + y, score)
-
-    def _coarse(self, view, scales):
-        best = None
-        for scale in scales:
-            template = cv2.resize(view, None, fx=scale * COARSE, fy=scale * COARSE, interpolation=cv2.INTER_AREA)
-            score, (x, y) = _match(self._small, template)
-            if best is None or score > best.score:
-                best = Placement(float(scale), x / COARSE, y / COARSE, score)
-        return best
-
-    def _refine(self, view, rough, scales):
+    @staticmethod
+    def _tiles(view):
         h, w = view.shape[:2]
-        pad = 40
-        best = None
-        for scale in scales:
-            x0, y0 = max(int(rough.mx) - pad, 0), max(int(rough.my) - pad, 0)
-            area = (x0, y0, min(int(rough.mx + w * scale) + pad, self.world.shape[1]),
-                    min(int(rough.my + h * scale) + pad, self.world.shape[0]))
-            place = self._at(view, scale, area)
-            if best is None or place.score > best.score:
-                best = place
-        return best
+        tw, th = w // TILE_COLS, h // TILE_ROWS
+        return [(c * tw, r * th, view[r * th:(r + 1) * th, c * tw:(c + 1) * tw])
+                for r in range(TILE_ROWS) for c in range(TILE_COLS)]
 
-    def locate(self, view) -> Placement | None:
-        place = None
-        if self.scale is not None and self.last is not None:
-            h, w = view.shape[:2]
-            x0, y0 = max(int(self.last.mx) - NEAR_WINDOW, 0), max(int(self.last.my) - NEAR_WINDOW, 0)
-            area = (x0, y0, min(int(self.last.mx + w * self.scale) + NEAR_WINDOW, self.world.shape[1]),
-                    min(int(self.last.my + h * self.scale) + NEAR_WINDOW, self.world.shape[0]))
-            place = self._at(view, self.scale, area)
-        if place is None or place.score < GOOD_SCORE:
-            scales = SCALES if self.scale is None else [self.scale]
-            rough = self._coarse(view, scales)
-            if rough is None or rough.score < GOOD_SCORE * 0.8:
-                return None
-            fine = np.arange(rough.scale - 0.02, rough.scale + 0.021, 0.005) if self.scale is None else [self.scale]
-            place = self._refine(view, rough, fine)
-        if place is None or place.score < GOOD_SCORE:
-            return None
+    def _vote(self, view, scale, small=False, near=None):
+        """(Placement, сколько кусков согласны) — положение левого верхнего угла экрана на карте."""
+        world, factor = (self._small, COARSE) if small else (self.world, 1.0)
+        votes = []
+        for ox, oy, tile in self._tiles(view):
+            template = cv2.resize(tile, None, fx=scale * factor, fy=scale * factor, interpolation=cv2.INTER_AREA)
+            x0 = y0 = 0
+            area = world
+            if near is not None:
+                cx, cy = (near.mx + ox * scale) * factor, (near.my + oy * scale) * factor
+                pad = NEAR_WINDOW * factor
+                x0, y0 = int(max(cx - pad, 0)), int(max(cy - pad, 0))
+                x1 = int(min(cx + template.shape[1] + pad, world.shape[1]))
+                y1 = int(min(cy + template.shape[0] + pad, world.shape[0]))
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                area = world[y0:y1, x0:x1]
+            score, (x, y) = _match(area, template)
+            if score >= TILE_SCORE:
+                votes.append(((x0 + x) / factor - ox * scale, (y0 + y) / factor - oy * scale, score))
+        tolerance = AGREE_PX / factor
+        best = []
+        for mx, my, _ in votes:
+            group = [v for v in votes if abs(v[0] - mx) <= tolerance and abs(v[1] - my) <= tolerance]
+            if len(group) > len(best) or (len(group) == len(best) and sum(g[2] for g in group) > sum(g[2] for g in best)):
+                best = group
+        if not best:
+            return None, 0
+        place = Placement(float(scale), float(np.median([g[0] for g in best])), float(np.median([g[1] for g in best])),
+                          float(np.mean([g[2] for g in best])))
+        return place, len(best)
+
+    def _accept(self, place):
         self.scale = place.scale
         self.last = place
         return place
+
+    def locate(self, view) -> Placement | None:
+        if self.scale is not None and self.last is not None:
+            place, agree = self._vote(view, self.scale, near=self.last)
+            if agree >= MIN_AGREE:
+                return self._accept(place)
+        scales = SCALES if self.scale is None else [self.scale]
+        rough, rough_agree = None, 0
+        for scale in scales:
+            place, agree = self._vote(view, scale, small=True)
+            if place is not None and (agree, place.score) > (rough_agree, rough.score if rough else -1):
+                rough, rough_agree = place, agree
+        if rough is None or rough_agree < MIN_AGREE:
+            return None
+        fine = np.arange(rough.scale - 0.02, rough.scale + 0.021, 0.005) if self.scale is None else [self.scale]
+        best, best_agree = None, 0
+        for scale in fine:
+            place, agree = self._vote(view, float(scale), near=rough)
+            if place is not None and (agree, place.score) > (best_agree, best.score if best else -1):
+                best, best_agree = place, agree
+        if best is None or best_agree < MIN_AGREE:
+            return None
+        return self._accept(best)
 
 
 def view_rect(game_rect) -> tuple:

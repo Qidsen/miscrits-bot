@@ -19,6 +19,8 @@ def decide(species_id, rank, rarity: str, collection) -> Decision:
     if species_id is None:
         return Decision(KILL, False, "вид не распознан")
     plat = rarity in PLAT_RARITIES
+    if plat:
+        return Decision(CAPTURE, True, f"{rarity} — ловим всегда")
     if not collection.owns(species_id):
         return Decision(CAPTURE, plat, "нового вида нет в коллекции")
     best = collection.best(species_id)

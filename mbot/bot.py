@@ -362,14 +362,33 @@ class Bot:
             world = self._companion.map_image(location)
             if world is None:
                 raise Stuck(f"нет карты локации {location}")
-            locator = self._locators[location] = Locator(world)
+            locator = self._locators[location] = Locator(world, scale=self._map_scales().get(self._scale_key(location)))
         self.eyes.look()
         rect, view = self._view()
+        known = locator.scale
         place = locator.locate(view)
         if place is None:
             raise Stuck("не нашёл себя на карте локации")
+        if known is None:
+            # масштаб карты зависит от локации и разрешения — запоминаем, чтобы в следующий раз не искать его 10 с
+            scales = self._map_scales()
+            scales[self._scale_key(location)] = place.scale
+            try:
+                self._learn_path.with_name("map_scale.json").write_text(json.dumps(scales), encoding="utf-8")
+            except OSError:
+                pass
         self._emit("position", (location, place, rect))
         return rect, place
+
+    def _scale_key(self, location):
+        game = self._game_rect_fn() if self._game_rect_fn else None
+        return f"{location}|{game[2]}x{game[3]}" if game else location
+
+    def _map_scales(self) -> dict:
+        try:
+            return json.loads(self._learn_path.with_name("map_scale.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
 
     def _marker_on_screen(self, location, marker, margin=60):
         rect, place = self._where(location)
@@ -458,6 +477,7 @@ class Bot:
         self.stats.battles += 1
         self._page = 0
         enemy = rank = decision = None
+        reads = 0  # сколько раз пробовали прочитать противника (не больше двух ходов)
         plat_used = 0
         last = None  # (имя моего крита, Move, HP противника до удара)
         my_ratio = 1.0
@@ -477,14 +497,21 @@ class Bot:
                 break
             self._sleep(0.4)  # анимации панели HP
             self.eyes.look()
-            if enemy is None:
+            if decision is None or (enemy is None and reads < 2):
+                # имя и ранг читаем один раз; если с первого хода не вышло (анимация входа), — ещё раз на втором
+                reads += 1
                 name = self.eyes.read_name("enemy_name", by_name)
                 enemy = by_name.get(name)
                 rank = self.eyes.read_rank("enemy_rank") if self.eyes.knows("enemy_rank") else None
+                if enemy is None and reads < 2:
+                    decision = decide(None, None, "", self._collection())
+                    self._sleep(0.8)
+                    continue
                 if rank is None and self.eyes.knows("enemy_rank"):
                     self._save_rank_sample()
                 if enemy is None:
-                    self._say("противник не распознан — бью")
+                    shot = self._screenshot("enemy-unknown")
+                    self._say(f"противник не распознан — бью (скриншот: {shot})")
                 decision = decide(enemy.id if enemy else None, rank, enemy.rarity if enemy else "", self._collection())
                 who = f"{enemy.names[0]} ({enemy.rarity}) {rank or '?'}" if enemy else "?"
                 self._say(f"бой: {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} — {decision.reason}")

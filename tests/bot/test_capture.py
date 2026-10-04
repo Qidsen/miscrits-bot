@@ -32,7 +32,14 @@ def test_s_plus_owned_means_always_kill():
 
 
 def test_owned_species_with_unknown_rank_is_killed():
-    assert decide(1, None, "Exotic", coll((1, "B"))).action == KILL
+    assert decide(1, None, "Rare", coll((1, "B"))).action == KILL
+
+
+def test_exotic_and_legendary_always_captured_even_if_owned_better():
+    for rarity in ("Exotic", "Legendary"):
+        d = decide(1, "F", rarity, coll((1, "S+")))
+        assert d.action == CAPTURE and d.allow_plat
+        assert decide(1, None, rarity, coll((1, "S+"))).action == CAPTURE
 
 
 def test_plat_allowed_only_for_exotic_and_legendary():
