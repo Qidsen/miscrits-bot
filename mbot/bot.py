@@ -26,7 +26,7 @@ WALK_STEPS = 14
 CLICK_HALF = 14
 MISS_RETRIES = 2
 MAX_TRAININGS = 4  # критов в команде
-BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 8, 0.2, 12.0
+BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
 
 
 def ready_label_of(row):
@@ -727,11 +727,11 @@ class Bot:
             return 0
         trained = 0
         for _ in range(MAX_TRAININGS):
-            row = self._find_anywhere(ready_label, timeout=4, threshold=0.75)
+            row = self._find_anywhere(ready_label, timeout=3, threshold=0.75)
             if row is None:
                 break
             self._press(row, "READY")
-            self._sleep(0.8)
+            self._sleep(0.4)
             for step in middle:
                 self._click_step(step, timeout=4 if step.optional else 8)
             self._dismiss_popups_quietly()
@@ -742,23 +742,28 @@ class Bot:
         self._sleep(0.8)
         return trained
 
-    def _find_anywhere(self, image, timeout, threshold=None):
+    def _find_anywhere(self, image, timeout, threshold=None, near=None):
+        """Ищет картинку: сначала рядом с местом, где её показали при обучении (миллисекунды),
+        потом по всему экрану (около 0,4 с на двух мониторах)."""
         end = time.monotonic() + timeout
+        threshold = threshold or self.eyes.threshold
         while True:
             self._checkpoint()
             self.eyes.look()
-            rect = find(self.eyes.image, image, threshold or self.eyes.threshold)
+            rect = find(self.eyes.image, image, threshold, near=near) if near is not None else None
+            if rect is None:
+                rect = find(self.eyes.image, image, threshold)
             if rect is not None or time.monotonic() >= end:
                 return rect
-            time.sleep(0.3)
+            time.sleep(0.15)
 
     def _click_step(self, step, timeout) -> bool:
-        rect = self._find_anywhere(step.snap.image, timeout)
+        rect = self._find_anywhere(step.snap.image, timeout, near=step.snap.rect)
         if rect is None:
             return False
         for attempt in range(3):
             self._press(rect, "train step" + (f" (ещё раз, {attempt})" if attempt else ""))
-            self._sleep(random.uniform(0.7, 1.2))
+            self._sleep(random.uniform(0.35, 0.6))
             # кнопка осталась на месте — нажатие не сработало (промах или окно ещё не ожило), жмём ещё
             self.eyes.look()
             again = find(self.eyes.image, step.snap.image, self.eyes.threshold, near=rect)
@@ -769,7 +774,7 @@ class Bot:
 
     def _dismiss_popups_quietly(self):
         for _ in range(4):
-            found, rect = self._wait_for(POPUPS, timeout=1.5)
+            found, rect = self._wait_for(POPUPS, timeout=0.6, interval=0.15)
             if found is None:
                 return
             self._press(rect, found)
@@ -787,7 +792,7 @@ class Bot:
             while rect is None and time.monotonic() < end:
                 self._checkpoint()
                 self.eyes.look()
-                rect = self.eyes.sees_snap(step.snap, anywhere=True)
+                rect = self.eyes.sees_snap(step.snap) or self.eyes.sees_snap(step.snap, anywhere=True)
                 if rect is None:
                     time.sleep(0.4)
             if rect is None:

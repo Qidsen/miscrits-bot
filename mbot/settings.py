@@ -14,8 +14,8 @@ def bot_dir() -> Path:
 
 @dataclass
 class Settings:
-    delay_min: float = 0.5        # пауза перед каждым кликом, с
-    delay_max: float = 1.4
+    delay_min: float = 0.3        # пауза перед каждым кликом, с
+    delay_max: float = 0.8
     break_every_min: int = 30     # перерыв раз в N..M минут
     break_every_max: int = 60
     break_len_min: int = 2        # длина перерыва, минут
