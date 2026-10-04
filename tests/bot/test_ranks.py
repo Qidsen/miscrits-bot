@@ -16,10 +16,11 @@ def test_every_seed_is_recognised_by_the_others(monkeypatch):
     for i, (rank, data) in enumerate(seeds):
         monkeypatch.setattr(R, "SEEDS", [s for j, s in enumerate(seeds) if j != i])
         got = RankBook().classify(_decode(data))
-        if sum(1 for r, _ in seeds if r == rank) > 1:
-            assert got == rank
+        others = [r for j, (r, _) in enumerate(seeds) if j != i]
+        if any(r[0] == rank[0] for r in others):
+            assert got == rank  # буква известна (хотя бы с плюсом или без) — ранг узнаём, плюс по углу
         else:
-            assert got is None  # единственный образец своего ранга — без него ранг неизвестен
+            assert got is None  # такой буквы больше нет в базе — ранг неизвестен
 
 
 def test_plus_flips_when_corner_differs():
