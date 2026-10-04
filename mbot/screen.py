@@ -13,12 +13,36 @@ SEARCH_MARGIN = 160  # элементы UI ищем рядом с местом, 
 _local = threading.local()
 
 
-def grab() -> np.ndarray:
-    """Скриншот основного монитора в BGR."""
+def _mss():
     if not hasattr(_local, "mss"):
-        _local.mss = mss.mss()  # mss не любит, когда один объект дёргают из разных потоков
-    shot = _local.mss.grab(_local.mss.monitors[1])
+        _local.mss = getattr(mss, "MSS", mss.mss)()  # mss не любит, когда один объект дёргают из разных потоков
+    return _local.mss
+
+
+def origin() -> tuple:
+    """Левый верхний угол всего рабочего стола. При двух мониторах может быть отрицательным:
+    координаты картинок отсчитываются от него, координаты мыши — от основного монитора."""
+    desktop = _mss().monitors[0]
+    return desktop["left"], desktop["top"]
+
+
+def grab() -> np.ndarray:
+    """Скриншот всего рабочего стола (все мониторы) в BGR — игра может быть на любом."""
+    shot = _mss().grab(_mss().monitors[0])
     return np.asarray(shot)[:, :, :3].copy()
+
+
+def to_image(point) -> tuple:
+    """Позиция курсора → координаты на скриншоте."""
+    ox, oy = origin()
+    return point[0] - ox, point[1] - oy
+
+
+def to_screen(rect) -> tuple:
+    """Прямоугольник на скриншоте → координаты для мыши."""
+    ox, oy = origin()
+    x, y, w, h = rect
+    return x + ox, y + oy, w, h
 
 
 def crop(image: np.ndarray, rect) -> np.ndarray:

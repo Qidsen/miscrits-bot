@@ -22,7 +22,7 @@ from miscrits_hud.config import game_data_dir
 from . import mouse
 from .bot import Bot
 from .eyes import Eyes
-from .screen import Ocr, around, crop, grab
+from .screen import Ocr, around, crop, grab, to_image, to_screen
 from .settings import Settings, save_settings
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
 
@@ -201,7 +201,7 @@ class MainWindow(QMainWindow):
         logs = self.home / "logs"
         logs.mkdir(exist_ok=True)
         self.bot = Bot(
-            eyes, mouse.click, self.catalogs.get, lambda: self.hud.controller.player, self.settings,
+            eyes, lambda rect: mouse.click(to_screen(rect)), self.catalogs.get, lambda: self.hud.controller.player, self.settings,
             self.home / "learn.json", logs, on_event=lambda kind, data: self.bridge.event.emit(kind, data),
             foreground=lambda: hotkeys.foreground_process()[0],
         )
@@ -329,7 +329,7 @@ class MainWindow(QMainWindow):
         if self.capture_mode is None:
             return
         image = grab()
-        pos = mouse.position()
+        pos = to_image(mouse.position())
         kind = self.capture_mode[0]
         if kind == "element":
             element = next(e for e in ELEMENTS if e.id == self.capture_mode[1])
@@ -355,7 +355,7 @@ class MainWindow(QMainWindow):
             rect = around(pos, self.settings.button_size, image.shape)
             self.teaching.routes.setdefault(name, []).append(Step(Snapshot(rect, crop(image, rect).copy())))
             # кликаем за пользователя — так запись идёт в один проход: F4 = «запомнить и нажать»
-            mouse.click(rect)
+            mouse.click(to_screen(rect))
             self.route_hint.setText(f"Записано шагов: {len(self.teaching.routes[name])}. "
                                     "F4 на следующем элементе или «Закончить запись».")
         self._save_teaching()
