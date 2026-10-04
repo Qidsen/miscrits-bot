@@ -39,6 +39,30 @@ def moves_from_catalog(abilities: list, names_on_screen) -> list:
     return moves
 
 
+# Таблица стихий из Miscrits Companion: стихия атаки → кого она бьёт сильнее.
+BEATS = {"Fire": "Nature", "Nature": "Water", "Water": "Fire", "Earth": "Lightning", "Lightning": "Wind", "Wind": "Earth"}
+STRONG, WEAK = 1.5, 0.5
+BASE_ELEMENTS = tuple(BEATS)
+
+
+def split_element(element: str) -> list:
+    """'FireWind' → ['Fire', 'Wind']."""
+    return [e for e in BASE_ELEMENTS if e in element]
+
+
+def multiplier(attack: str, defender: str) -> float:
+    """Множитель урона атаки против (возможно, двойной) стихии цели. Physical/Misc нейтральны."""
+    if attack not in BEATS:
+        return 1.0
+    m = 1.0
+    for part in split_element(defender):
+        if BEATS[attack] == part:
+            m *= STRONG
+        elif BEATS[part] == attack:
+            m *= WEAK
+    return m
+
+
 class DamageModel:
     """Отношение «урон / (ap × удары)» по (атакующий, стихия атаки, стихия цели)."""
 
@@ -53,7 +77,12 @@ class DamageModel:
         if damage <= 0 or move.power <= 0:
             return  # промах ничего не говорит о силе удара
         ratio = damage / move.power
-        stats = self._stats.setdefault(self._key(attacker, move, target_element), [0, 0.0, 0.0])
+        self._add(self._key(attacker, move, target_element), ratio)
+        # общая сила атакующего без учёта стихий — чтобы оценивать и непробованные пары стихий
+        self._add(f"{attacker}|*", ratio / multiplier(move.element, target_element))
+
+    def _add(self, key, ratio):
+        stats = self._stats.setdefault(key, [0, 0.0, 0.0])
         stats[0] += 1
         stats[1] += ratio
         stats[2] = max(stats[2], ratio)
@@ -64,11 +93,12 @@ class DamageModel:
         if stats:
             n, total, top = stats
             return total / n * move.power, top * (1.15 if n >= 3 else 1.5) * move.power
-        mine = [v for k, v in self._stats.items() if k.startswith(f"{attacker}|")]
-        if mine:
-            n = sum(v[0] for v in mine)
-            return sum(v[1] for v in mine) / n * move.power, max(v[2] for v in mine) * 1.5 * move.power
-        return DEFAULT_RATIO * move.power, DEFAULT_HIGH * move.power
+        m = multiplier(move.element, target_element)
+        overall = self._stats.get(f"{attacker}|*")
+        if overall:
+            n, total, top = overall
+            return total / n * m * move.power, top * 1.5 * m * move.power
+        return DEFAULT_RATIO * m * move.power, DEFAULT_HIGH * m * move.power
 
     def to_json(self) -> dict:
         return {k: list(v) for k, v in self._stats.items()}

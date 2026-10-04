@@ -1,7 +1,9 @@
 """Главное окно: управление ботом, обучение элементов и маршрутов, настройки, журнал."""
 
 import logging
+import threading
 import time
+import urllib.request
 from ctypes import wintypes
 from dataclasses import fields
 
@@ -10,7 +12,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
     QVBoxLayout, QWidget,
 )
@@ -21,7 +23,9 @@ from miscrits_hud.config import game_data_dir
 
 from . import mouse
 from .bot import Bot
+from .collection import Collection
 from .eyes import Eyes
+from .hunt import LOCMAP_URL, hunt_rows
 from .location_dialog import LocationDialog, spots_from_points
 from .screen import Ocr, around, crop, grab, monitors_on_image, to_image, to_screen
 from .settings import Settings, save_settings
@@ -96,6 +100,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._bot_tab(), "Бот")
+        tabs.addTab(self._hunt_tab(), "Охота")
         tabs.addTab(self._teach_tab(), "Обучение")
         tabs.addTab(self._routes_tab(), "Точки и маршруты")
         tabs.addTab(self._settings_tab(), "Настройки")
@@ -235,6 +240,11 @@ class MainWindow(QMainWindow):
             self.status.setText("Работает")
         elif kind == "stopped":
             self.status.setText("Остановлен")
+        elif kind == "teaching_changed":
+            save_teaching(self.teaching_path, self.teaching)
+            self._refresh_spot_list()
+        elif kind == "locmap":
+            self._show_locmap(*data)
         elif kind == "stats":
             self._show_stats(data)
 
@@ -255,6 +265,152 @@ class MainWindow(QMainWindow):
     def _refresh_checks(self):
         problems = self._readiness()
         self.checks.setText("✅ Всё готово к запуску" if not problems else "⚠ " + "\n⚠ ".join(problems))
+
+    # ---------- вкладка «Охота» ----------
+
+    def _hunt_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        explain = QLabel(
+            "Отметьте галочкой цели. На локации бот первым делом жмёт точку, где водится цель (её он узнаёт сам по "
+            "встречам или по вашей подписи на вкладке «Точки и маршруты»), остальные точки — пока она на кулдауне. "
+            "Ловится по-прежнему всё, чего нет или что лучше имеющегося.")
+        explain.setWordWrap(True)
+        v.addWidget(explain)
+        row = QHBoxLayout()
+        self.hunt_search = QLineEdit()
+        self.hunt_search.setPlaceholderText("Поиск по имени…")
+        self.hunt_rarity = QComboBox()
+        self.hunt_rarity.addItems(["Все", "Legendary", "Exotic", "Epic", "Rare", "Common"])
+        self.hunt_today = QCheckBox("Только сегодня")
+        self.hunt_missing = QCheckBox("Только кого нет")
+        self.hunt_targets_only = QCheckBox("Только цели")
+        for widget in (self.hunt_search, self.hunt_rarity, self.hunt_today, self.hunt_missing, self.hunt_targets_only):
+            row.addWidget(widget)
+        v.addLayout(row)
+        self.hunt_table = QTableWidget(0, 7)
+        self.hunt_table.setHorizontalHeaderLabels(["Цель", "Вид", "Редкость", "Стихия", "Где водится", "Сегодня", "У вас"])
+        self.hunt_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.hunt_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.hunt_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.hunt_table.verticalHeader().setVisible(False)
+        header = self.hunt_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        v.addWidget(self.hunt_table, 1)
+        bottom = QHBoxLayout()
+        self.hunt_map = QLabel("Выберите вид — покажу, где он на карте (Miscrits Companion).")
+        self.hunt_map.setMinimumSize(360, 240)
+        self.hunt_map.setAlignment(Qt.AlignCenter)
+        bottom.addWidget(self.hunt_map)
+        self.hunt_summary = QLabel("")
+        self.hunt_summary.setWordWrap(True)
+        self.hunt_summary.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        bottom.addWidget(self.hunt_summary, 1)
+        v.addLayout(bottom)
+        self._hunt_rows = []
+        self._hunt_filling = False
+        self._locmap_cache = {}
+        self._wanted_map = None
+        for widget in (self.hunt_today, self.hunt_missing, self.hunt_targets_only):
+            widget.toggled.connect(self._fill_hunt)
+        self.hunt_search.textChanged.connect(self._fill_hunt)
+        self.hunt_rarity.currentIndexChanged.connect(self._fill_hunt)
+        self.hunt_table.itemChanged.connect(self._hunt_item_changed)
+        self.hunt_table.itemSelectionChanged.connect(self._hunt_selected)
+        QTimer.singleShot(500, self._fill_hunt)
+        return w
+
+    def _collection(self):
+        player = self.hud.controller.player
+        return Collection.from_player(player) if player is not None else Collection()
+
+    def _fill_hunt(self):
+        catalog = self.catalogs.get()
+        if catalog is None:
+            self.hunt_summary.setText("Каталог игры не найден — запустите игру.")
+            return
+        rows = hunt_rows(catalog, self._collection())
+        text = self.hunt_search.text().strip().lower()
+        rarity = self.hunt_rarity.currentText()
+        targets = set(self.settings.hunt_targets)
+        rows = [r for r in rows
+                if (not text or any(text in n.lower() for n in r.species.names))
+                and (rarity == "Все" or r.species.rarity == rarity)
+                and (not self.hunt_today.isChecked() or r.today)
+                and (not self.hunt_missing.isChecked() or not r.owned)
+                and (not self.hunt_targets_only.isChecked() or r.species.names[0] in targets)]
+        self._hunt_rows = rows
+        self._hunt_filling = True
+        self.hunt_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            check.setCheckState(Qt.Checked if r.species.names[0] in targets else Qt.Unchecked)
+            self.hunt_table.setItem(i, 0, check)
+            name = r.species.names[0]
+            if len(r.species.names) > 1:
+                name += f"  ({' → '.join(r.species.names[1:])})"
+            for col, value in enumerate((name, r.species.rarity, r.species.element, r.where,
+                                         "да" if r.today else "", r.owned or "нет"), 1):
+                self.hunt_table.setItem(i, col, QTableWidgetItem(value))
+        self._hunt_filling = False
+        self._hunt_summary()
+
+    def _hunt_summary(self):
+        targets = self.settings.hunt_targets
+        if not targets:
+            self.hunt_summary.setText("Целей нет — бот просто фармит опыт и ловит всё, что лучше имеющегося.")
+            return
+        lines = []
+        for name in targets:
+            spots = [str(i + 1) for i, s in enumerate(self.teaching.spots) if name in s.species_here()]
+            lines.append(f"<b>{name}</b>: " + (f"точка {', '.join(spots)}" if spots else "точка пока неизвестна"))
+        self.hunt_summary.setText("Цели:<br>" + "<br>".join(lines))
+
+    def _hunt_item_changed(self, item):
+        if self._hunt_filling or item.column() != 0:
+            return
+        name = self._hunt_rows[item.row()].species.names[0]
+        targets = [t for t in self.settings.hunt_targets if t != name]
+        if item.checkState() == Qt.Checked:
+            targets.append(name)
+        self.settings.hunt_targets = targets
+        save_settings(self.settings_path, self.settings)
+        self._hunt_summary()
+
+    def _hunt_selected(self):
+        row = self.hunt_table.currentRow()
+        if not 0 <= row < len(self._hunt_rows):
+            return
+        species_id = self._hunt_rows[row].species.id
+        self._wanted_map = species_id
+        if species_id in self._locmap_cache:
+            self._show_locmap(species_id, self._locmap_cache[species_id])
+            return
+        self.hunt_map.setText("Загружаю карту…")
+
+        def fetch():
+            data = None
+            try:
+                request = urllib.request.Request(LOCMAP_URL.format(id=species_id), headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    data = response.read()
+            except Exception:
+                pass
+            self.bridge.event.emit("locmap", (species_id, data))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _show_locmap(self, species_id, data):
+        self._locmap_cache[species_id] = data
+        if self._wanted_map != species_id:
+            return
+        pixmap = QPixmap()
+        if data and pixmap.loadFromData(data):
+            self.hunt_map.setPixmap(pixmap)
+        else:
+            self.hunt_map.setText("Для этого вида карты нет.")
 
     # ---------- вкладка «Обучение» ----------
 
@@ -418,7 +574,9 @@ class MainWindow(QMainWindow):
         done.clicked.connect(self._finish_capture)
         delete = QPushButton("Удалить выбранную")
         delete.clicked.connect(self._delete_spot)
-        for b in (add, done, delete):
+        label_btn = QPushButton("Подписать точку…")
+        label_btn.clicked.connect(self._label_spot)
+        for b in (add, done, delete, label_btn):
             row.addWidget(b)
         sv.addLayout(row)
         v.addWidget(spots_box)
@@ -500,6 +658,39 @@ class MainWindow(QMainWindow):
         self.route_hint.setText("")
         self.spot_hint.setText(f"Точек: {len(self.teaching.spots)}.")
 
+    @staticmethod
+    def _spot_caption(i, spot) -> str:
+        text = f"#{i}"
+        if spot.label:
+            text += f" {spot.label}"
+        if spot.seen:
+            top = sorted(spot.seen.items(), key=lambda kv: -kv[1])[:3]
+            text += "\n" + ", ".join(f"{n}×{c}" for n, c in top)
+        return text
+
+    def _refresh_spot_list(self):
+        for i, spot in enumerate(self.teaching.spots):
+            item = self.spot_list.item(i)
+            if item is not None:
+                item.setText(self._spot_caption(i + 1, spot))
+
+    def _label_spot(self):
+        row = self.spot_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Точки", "Выберите точку в списке.")
+            return
+        catalog = self.catalogs.get()
+        names = sorted({s.names[0] for s in catalog.species}) if catalog else []
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("Кто водится на этой точке")
+        dialog.setLabelText("Вид (пусто — убрать подпись):")
+        dialog.setComboBoxEditable(True)
+        dialog.setComboBoxItems([""] + names)
+        dialog.setTextValue(self.teaching.spots[row].label)
+        if dialog.exec():
+            self.teaching.spots[row].label = dialog.textValue().strip()
+            self._save_teaching()
+
     def _delete_spot(self):
         row = self.spot_list.currentRow()
         if row >= 0:
@@ -544,6 +735,8 @@ class MainWindow(QMainWindow):
         self.setting_widgets = {}
         for f in fields(Settings):
             value = getattr(self.settings, f.name)
+            if isinstance(value, list):
+                continue  # цели охоты задаются на вкладке «Охота»
             if isinstance(value, bool):
                 widget = QCheckBox()
                 widget.setChecked(value)
@@ -611,8 +804,9 @@ class MainWindow(QMainWindow):
             self.table.setCellWidget(row, 3, label)
         self.spot_list.clear()
         for i, spot in enumerate(self.teaching.spots, 1):
-            item = QListWidgetItem(f"#{i}")
-            item.setIcon(to_pixmap(spot.image, 110, 110))
+            item = QListWidgetItem(self._spot_caption(i, spot))
+            if spot.image is not None:
+                item.setIcon(to_pixmap(spot.image, 110, 110))
             self.spot_list.addItem(item)
         self._refresh_route()
         self._refresh_checks()

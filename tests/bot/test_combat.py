@@ -82,3 +82,24 @@ def test_without_chance_capture_at_low_hp_ratio():
     m = trained(HIT=0.1)
     a = choose_capture([HIT], m, "Me", "Fire", hp=30, max_hp=100, chance=None, min_chance=70, can_capture=True)
     assert a.kind == CAPTURE
+
+
+def test_element_multiplier_table():
+    from mbot.brain.combat import multiplier
+
+    assert multiplier("Water", "Fire") == 1.5
+    assert multiplier("Fire", "Water") == 0.5
+    assert multiplier("Water", "FireEarth") == 1.5
+    assert multiplier("Fire", "NatureWind") == 1.5
+    assert multiplier("Physical", "Fire") == 1.0
+
+
+def test_untried_element_pair_uses_multiplier():
+    m = DamageModel()
+    fire = Move("Burn", 10, 1, 100, "Fire")
+    for _ in range(3):
+        m.observe("Me", fire, "Earth", 20)  # нейтрально: 2 урона за ap
+    assert m.estimate("Me", fire, "Nature")[0] == 30.0  # Fire бьёт Nature ×1.5
+    assert m.estimate("Me", fire, "Water")[0] == 10.0
+    kill = choose_kill([fire, Move("Splash", 10, 1, 100, "Water")], m, "Me", "Fire")
+    assert kill.name == "Splash"

@@ -267,6 +267,9 @@ class Bot:
         now = time.monotonic()
         order = [(self._spot + k) % len(spots) for k in range(len(spots))]
         ready = [i for i in order if now - self._spot_used.get(i, float("-inf")) >= cooldown]
+        # точки, где водится цель охоты, — первыми, как только остыли
+        targets = set(self.settings.hunt_targets)
+        ready.sort(key=lambda i: not (spots[i].species_here() & targets))
         if not ready:
             wait = min(cooldown - (now - self._spot_used[i]) for i in order)
             self._state(f"все точки на кулдауне, жду {wait:.0f} с")
@@ -283,7 +286,11 @@ class Bot:
             self._spot_used[i] = time.monotonic()
             found, _ = self._wait_for(("battle", "come_back_later", *POPUPS), timeout=6)
             if found == "battle":
-                self._battle()
+                enemy = self._battle()
+                if enemy is not None:
+                    seen = spots[i].seen
+                    seen[enemy.names[0]] = seen.get(enemy.names[0], 0) + 1
+                    self._emit("teaching_changed", None)
             # come_back_later: наш отсчёт разошёлся с игрой — он уже начат заново с момента клика;
             # попап (предмет/золото) закроется на следующем шаге
             return
@@ -373,6 +380,7 @@ class Bot:
             last = (my_name, move, hp[0]) if hp else None
             self._sleep(1.0)
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
+        return enemy
 
     def _known_moves(self, my_name, species):
         """Атаки и прочие способности крита, которые видны на кнопках (все страницы)."""

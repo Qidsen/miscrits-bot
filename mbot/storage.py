@@ -69,20 +69,31 @@ def decode_image(data: str) -> np.ndarray:
 
 @dataclass
 class Snapshot:
-    """Прямоугольник на экране (x, y, w, h) и картинка этого места в момент обучения."""
+    """Прямоугольник на экране (x, y, w, h) и картинка этого места в момент обучения.
+    Для точек поиска ещё подпись (кто тут водится, со слов пользователя) и кого бот тут встречал."""
     rect: tuple
     image: np.ndarray | None = None
+    label: str = ""
+    seen: dict = field(default_factory=dict)  # имя вида -> сколько раз встречен
 
     def to_json(self) -> dict:
         data = {"rect": list(self.rect)}
         if self.image is not None:
             data["image"] = encode_image(self.image)
+        if self.label:
+            data["label"] = self.label
+        if self.seen:
+            data["seen"] = self.seen
         return data
 
     @classmethod
     def from_json(cls, data: dict) -> "Snapshot":
         image = decode_image(data["image"]) if data.get("image") else None
-        return cls(tuple(int(v) for v in data["rect"]), image)
+        return cls(tuple(int(v) for v in data["rect"]), image, str(data.get("label") or ""),
+                   {str(k): int(v) for k, v in (data.get("seen") or {}).items()})
+
+    def species_here(self) -> set:
+        return ({self.label} if self.label else set()) | set(self.seen)
 
 
 @dataclass

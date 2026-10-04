@@ -2,7 +2,7 @@
 
 import json
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -29,6 +29,8 @@ class Settings:
     match_threshold: float = 0.82
     button_size: int = 110        # сторона квадрата, который снимается вокруг курсора по F4
     tesseract_cmd: str = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    kill_with_first: bool = True  # добивать первой способностью (у многих она лечит)
+    hunt_targets: list = field(default_factory=list)  # имена видов (names[0]) — цели охоты
 
 
 def load_settings(path) -> Settings:

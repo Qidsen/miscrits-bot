@@ -150,3 +150,25 @@ def test_spots_rotate_and_respect_cooldown_from_click(tmp_path):
 def mbot_time():
     import mbot.bot
     return mbot.bot.time
+
+
+def test_target_spot_goes_first_when_ready(tmp_path):
+    eyes = SpotEyes(3)
+    eyes.teaching.spots[2].label = "Goldy"
+    bot, clicks = make_bot(eyes, tmp_path)
+    bot.settings.hunt_targets = ["Goldy"]
+    bot._hunt()
+    assert clicks == [(200, 0, 10, 10)]
+    bot._hunt()
+    assert clicks[-1] == (0, 0, 10, 10)  # цель на кулдауне — пока остальные
+
+
+def test_battle_records_who_came_from_spot(tmp_path):
+    turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
+    eyes = SpotEyes(1)
+    eyes.frames = [{"see": {"battle"}}, turn, turn, turn, {"see": {"battle_won"}}, {"see": set()}]
+    bot, _ = make_bot(eyes, tmp_path)
+    events = []
+    bot._emit = lambda kind, data: events.append(kind)
+    bot._hunt()
+    assert eyes.teaching.spots[0].seen == {"Flue": 1} and "teaching_changed" in events
