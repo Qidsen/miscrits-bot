@@ -123,8 +123,10 @@ def _match(world, template):
     return float(score), loc
 
 
-TILE_COLS, TILE_ROWS = 3, 2
+TILE_COLS, TILE_ROWS = 4, 3
+TILE_MIN = 0.45  # слабые куски голосуют, только если согласны с сильными
 TILE_SCORE = 0.7
+TILE_SURE = 0.9  # такому куску верим и в одиночку (у края мира остальные часто на карту не попадают)
 AGREE_PX = 8  # px карты: насколько должны сойтись куски, чтобы им поверить
 MIN_AGREE = 2
 
@@ -165,19 +167,23 @@ class Locator:
                     continue
                 area = world[y0:y1, x0:x1]
             score, (x, y) = _match(area, template)
-            if score >= TILE_SCORE:
+            if score >= TILE_MIN:
                 votes.append(((x0 + x) / factor - ox * scale, (y0 + y) / factor - oy * scale, score))
         tolerance = AGREE_PX / factor
-        best = []
+        best, best_key = [], None
         for mx, my, _ in votes:
             group = [v for v in votes if abs(v[0] - mx) <= tolerance and abs(v[1] - my) <= tolerance]
-            if len(group) > len(best) or (len(group) == len(best) and sum(g[2] for g in group) > sum(g[2] for g in best)):
-                best = group
-        if not best:
+            top = max(g[2] for g in group)
+            strong = sum(1 for g in group if g[2] >= TILE_SCORE)
+            valid = top >= TILE_SURE or strong >= MIN_AGREE
+            key = (valid, sum(g[2] for g in group))
+            if best_key is None or key > best_key:
+                best, best_key = group, key
+        if not best or not best_key[0]:
             return None, 0
         place = Placement(float(scale), float(np.median([g[0] for g in best])), float(np.median([g[1] for g in best])),
                           float(np.mean([g[2] for g in best])))
-        return place, len(best)
+        return place, max(len(best), MIN_AGREE)  # группа прошла проверку выше
 
     def _accept(self, place):
         self.scale = place.scale
