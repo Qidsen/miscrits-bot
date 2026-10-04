@@ -65,6 +65,15 @@ class Controller:
         """Последний ответ get_player (или из кэша прошлого запуска); None, пока данных нет."""
         return self._player
 
+    @property
+    def location(self):
+        """(название локации, номер зоны) по последнему переходу из лога или ответу сервера; None, если неизвестно."""
+        if self._location is None:
+            return None
+        location_id, area_id = self._location
+        name = self._names.get(location_id, "") if location_id else (self._player.location_name if self._player else "")
+        return (name, area_id) if name else None
+
     def request_refresh(self):
         self._manual = True
 

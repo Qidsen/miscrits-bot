@@ -29,7 +29,9 @@ from .eyes import Eyes
 from .hunt import LOCMAP_URL, hunt_rows
 from .location_dialog import LocationDialog, spots_from_points
 from .screen import Ocr, around, crop, grab, monitors_on_image, to_image, to_screen
-from .settings import Settings, save_settings
+from .gamewindow import game_client_rect
+from .settings import Settings, bot_dir, save_settings
+from .worldmap import Companion, Locator, view_rect
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
 
 log = logging.getLogger(__name__)
@@ -71,6 +73,15 @@ SETTING_GROUPS = (
                      "heal_below", "train_every")),
     ("Распознавание", ("match_threshold", "button_size", "tesseract_cmd")),
 )
+
+
+def game_rect_on_image():
+    """Окно игры в координатах скриншота рабочего стола (при двух мониторах они сдвинуты)."""
+    rect = game_client_rect()
+    if rect is None:
+        return None
+    x, y = to_image(rect[:2])
+    return x, y, rect[2], rect[3]
 
 
 def _hint(text="") -> QLabel:
@@ -119,6 +130,7 @@ class MainWindow(QMainWindow):
         handler.setLevel(logging.INFO)
         logging.getLogger("mbot").addHandler(handler)
         self.catalogs = CatalogCache(game_data_dir() / "image_cache" / "miscrits.json")
+        self.companion = Companion(bot_dir() / "companion")
         self.bot = None
         self.capture_mode = None  # ("element", id) | ("spot",) | ("route", имя)
         self.region_corner = None
@@ -273,6 +285,8 @@ class MainWindow(QMainWindow):
     def _readiness(self) -> list:
         problems = []
         missing = self.teaching.missing_required()
+        if self.settings.hunt_targets and "Точки поиска" in missing:
+            missing.remove("Точки поиска")  # точки целей берутся с карты сайта
         if missing:
             problems.append("Не обучено: " + ", ".join(missing))
         if "heal" not in self.teaching.routes:
@@ -302,6 +316,7 @@ class MainWindow(QMainWindow):
             eyes, lambda rect: mouse.click(to_screen(rect)), self.catalogs.get, lambda: self.hud.controller.player, self.settings,
             self.home / "learn.json", logs, on_event=lambda kind, data: self.bridge.event.emit(kind, data),
             foreground=lambda: hotkeys.foreground_process()[0],
+            location_fn=lambda: self.hud.controller.location, companion=self.companion, game_rect_fn=game_rect_on_image,
         )
         self.bot.start()
         self._set_state("running", "Работает")
@@ -342,6 +357,10 @@ class MainWindow(QMainWindow):
         elif kind == "teaching_changed":
             save_teaching(self.teaching_path, self.teaching)
             self._refresh_spot_list()
+        elif kind == "position":
+            self._show_position(*data)
+        elif kind == "position_failed":
+            self.hunt_map.setText(data)
         elif kind == "locmap":
             self._show_locmap(*data)
         elif kind == "stats":
@@ -409,9 +428,12 @@ class MainWindow(QMainWindow):
         map_layout = QVBoxLayout(map_card)
         map_layout.setContentsMargins(10, 10, 10, 10)
         self.hunt_map = _hint("Выберите вид — покажу, где он на карте")
-        self.hunt_map.setFixedSize(360, 240)
+        self.hunt_map.setFixedSize(420, 260)
         self.hunt_map.setAlignment(Qt.AlignCenter)
         map_layout.addWidget(self.hunt_map)
+        where_btn = QPushButton("📍  Где я на карте? (через 3 с)")
+        where_btn.clicked.connect(lambda: QTimer.singleShot(3000, self._where_am_i))
+        map_layout.addWidget(where_btn)
         bottom.addWidget(map_card)
         targets_card = QFrame()
         targets_card.setObjectName("card")
@@ -428,6 +450,7 @@ class MainWindow(QMainWindow):
         v.addLayout(bottom)
         self._hunt_rows = []
         self._hunt_filling = False
+        self._marker_names = None
         self._icons = {}
         self._icon_requested = set()
         self._icon_store = IconStore(game_data_dir() / "image_cache" / "miscrits", app_dir() / "icons")
@@ -520,10 +543,31 @@ class MainWindow(QMainWindow):
             self.hunt_summary.setText("Целей нет — бот просто фармит опыт и ловит всё, что лучше имеющегося.")
             return
         lines = []
+        on_map = self._markers_by_name()
         for name in targets:
             spots = [str(i + 1) for i, s in enumerate(self.teaching.spots) if name in s.species_here()]
-            lines.append(f"<b>{name}</b>: " + (f"точка {', '.join(spots)}" if spots else "точка пока неизвестна"))
+            if name in on_map:
+                where = f"<span style='color:{theme.GREEN}'>✓ точка на карте сайта</span> ({', '.join(sorted(on_map[name]))})"
+            elif spots:
+                where = f"точка {', '.join(spots)} (размечена у вас)"
+            else:
+                where = f"<span style='color:{theme.MUTED}'>точки нет на карте — бот узнает её сам при встрече</span>"
+            lines.append(f"<b>{name}</b>: {where}")
         self.hunt_summary.setText("<br>".join(lines))
+
+    def _markers_by_name(self) -> dict:
+        """Имя вида -> локации, где он отмечен на карте сайта (данные кэшируются на диске)."""
+        if self._marker_names is None:
+            try:
+                names = {}
+                for location, markers in (self.companion.all_markers() or {}).items():
+                    for m in markers:
+                        names.setdefault(m["name"], set()).add(location)
+                self._marker_names = names
+            except Exception:
+                log.exception("cannot read companion markers")
+                return {}
+        return self._marker_names
 
     def _hunt_item_changed(self, item):
         if self._hunt_filling or item.column() != 0:
@@ -558,6 +602,62 @@ class MainWindow(QMainWindow):
             self.bridge.event.emit("locmap", (species_id, data))
 
         threading.Thread(target=fetch, daemon=True).start()
+
+    def _where_am_i(self):
+        where = self.hud.controller.location
+        if not where:
+            self.hunt_map.setText("Локация неизвестна — HUD ещё не видел переход в игре")
+            return
+        self.hunt_map.setText("Ищу себя на карте…")
+
+        def work():
+            try:
+                world = self.companion.map_image(where[0])
+                game = game_rect_on_image()
+                if world is None or game is None:
+                    self.bridge.event.emit("position_failed", "нет карты локации или окна игры")
+                    return
+                image = grab()
+                x, y, w, h = view_rect(game)
+                place = Locator(world).locate(image[y:y + h, x:x + w])
+                if place is None:
+                    self.bridge.event.emit("position_failed", "не нашёл экран на карте — игра на локации, не в бою?")
+                else:
+                    self.bridge.event.emit("position", (where[0], place, (x, y, w, h)))
+            except Exception as e:
+                log.exception("where am i failed")
+                self.bridge.event.emit("position_failed", repr(e))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_position(self, location, place, rect):
+        """Кусок карты вокруг экрана: рамка — что видно сейчас, кружки — маркеры (цели жёлтые)."""
+        world = self.companion.map_image(location)
+        if world is None:
+            return
+        _, _, w, h = rect
+        x0, y0 = place.mx, place.my
+        x1, y1 = x0 + w * place.scale, y0 + h * place.scale
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        half_w, half_h = (x1 - x0) * 1.6, (y1 - y0) * 1.6
+        left, top = int(max(cx - half_w, 0)), int(max(cy - half_h, 0))
+        right, bottom = int(min(cx + half_w, world.shape[1])), int(min(cy + half_h, world.shape[0]))
+        crop = world[top:bottom, left:right]
+        k = min(self.hunt_map.width() / crop.shape[1], self.hunt_map.height() / crop.shape[0])
+        view = cv2.resize(crop, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+        # рисуем уже на уменьшенной картинке, чтобы метки не превратились в точки
+        cv2.rectangle(view, (int((x0 - left) * k), int((y0 - top) * k)), (int((x1 - left) * k), int((y1 - top) * k)),
+                      (108, 93, 255), 2)
+        targets = set(self.settings.hunt_targets)
+        for m in self.companion.markers(location):
+            px, py = int((m.x - left) * k), int((m.y - top) * k)
+            if 0 <= px < view.shape[1] and 0 <= py < view.shape[0]:
+                color = (102, 209, 255) if m.name in targets else (220, 220, 220)
+                cv2.circle(view, (px, py), 7, (0, 0, 0), 4)
+                cv2.circle(view, (px, py), 7, color, 2)
+                cv2.putText(view, m.name, (px + 10, py + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(view, m.name, (px + 10, py + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+        self.hunt_map.setPixmap(to_pixmap(view, self.hunt_map.width(), self.hunt_map.height()))
 
     def _show_locmap(self, species_id, data):
         self._locmap_cache[species_id] = data

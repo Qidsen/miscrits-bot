@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 import random
 import threading
 import time
@@ -14,11 +15,14 @@ from .brain.combat import ATTACK, STALL, DamageModel, choose_capture, choose_kil
 from .collection import Collection
 from .mouse import FailSafe
 from .storage import ABILITY_SLOTS, POPUPS
+from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
 
 log = logging.getLogger(__name__)
 
 GAME_EXE = "miscrits.exe"
 MAX_ABILITY_PAGES = 5
+WALK_STEPS = 14
+CLICK_HALF = 14
 MISS_RETRIES = 2
 
 
@@ -43,10 +47,18 @@ class Stats:
 
 class Bot:
     def __init__(self, eyes, hands, catalog_fn, player_fn, settings, learn_path, logs_dir,
-                 on_event=lambda kind, data: None, foreground=None):
+                 on_event=lambda kind, data: None, foreground=None, location_fn=None, companion=None,
+                 game_rect_fn=None):
         """hands(rect) — клик; catalog_fn() -> Catalog; player_fn() -> Player | None (коллекция из HUD);
-        foreground() -> имя exe активного окна; on_event(kind, data) — для GUI."""
+        foreground() -> имя exe активного окна; on_event(kind, data) — для GUI;
+        location_fn() -> (локация, зона) | None; companion — карты и маркеры сайта;
+        game_rect_fn() -> окно игры (x, y, w, h) в координатах скриншота."""
         self.eyes = eyes
+        self._location_fn = location_fn
+        self._companion = companion
+        self._game_rect_fn = game_rect_fn
+        self._locators = {}
+        self._marker_used = {}  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
         self._catalog_fn = catalog_fn
         self._player_fn = player_fn
@@ -262,7 +274,11 @@ class Bot:
     # ---- охота ----
 
     def _hunt(self):
+        if self._map_hunt():
+            return
         spots = self.eyes.teaching.spots
+        if not spots:
+            raise Stuck("нет точек поиска: целей охоты нет в этой зоне на карте сайта, а вручную точки не размечены")
         # Кулдаун точки идёт с момента клика по ней, бой входит в это время — считаем его сами.
         cooldown = self.settings.spot_cooldown + 1
         now = time.monotonic()
@@ -283,30 +299,154 @@ class Bot:
             if rect is None:
                 continue
             self._spot = i + 1
-            found = None
-            for attempt in range(MISS_RETRIES + 1):
-                self._press(rect, f"spot {i + 1}" + (f" (ещё раз, {attempt})" if attempt else ""))
-                clicked_at = time.monotonic()
-                found, _ = self._wait_for(("battle", "come_back_later", *POPUPS), timeout=6)
-                if found is not None:
-                    break
-                # ни боя, ни попапа, ни «Come back later» — скорее всего, промахнулись мимо точки:
-                # персонаж подбежал к ней, кликаем ещё раз уже оттуда
-                self.eyes.look()
-                rect = self.eyes.locate_spot(spots[i])
-                if rect is None:
-                    break
+            clicked_at, enemy = self._search(rect, lambda i=i: self.eyes.locate_spot(spots[i]), f"spot {i + 1}")
             self._spot_used[i] = clicked_at
-            if found == "battle":
-                enemy = self._battle()
-                if enemy is not None:
-                    seen = spots[i].seen
-                    seen[enemy.names[0]] = seen.get(enemy.names[0], 0) + 1
-                    self._emit("teaching_changed", None)
-            # come_back_later: наш отсчёт разошёлся с игрой — он уже начат заново с момента клика;
-            # попап (предмет/золото) закроется на следующем шаге
+            if enemy is not None:
+                seen = spots[i].seen
+                seen[enemy.names[0]] = seen.get(enemy.names[0], 0) + 1
+                self._emit("teaching_changed", None)
             return
         raise Stuck("не вижу ни одной точки поиска")
+
+    def _search(self, rect, relocate, label):
+        """Клик по точке поиска и бой, если он начался. (время клика, вид противника или None).
+        Ни боя, ни попапа, ни «Come back later» — скорее всего, промахнулись: персонаж подбежал к точке,
+        кликаем ещё раз уже оттуда. come_back_later — наш отсчёт кулдауна разошёлся с игрой, он начнётся
+        заново с этого клика; попап (предмет/золото) закроется на следующем шаге."""
+        found = None
+        clicked_at = time.monotonic()
+        for attempt in range(MISS_RETRIES + 1):
+            self._press(rect, label + (f" (ещё раз, {attempt})" if attempt else ""))
+            clicked_at = time.monotonic()
+            found, _ = self._wait_for(("battle", "come_back_later", *POPUPS), timeout=6)
+            if found is not None:
+                break
+            self.eyes.look()
+            rect = relocate()
+            if rect is None:
+                break
+        return clicked_at, (self._battle() if found == "battle" else None)
+
+    # ---- охота по карте сайта ----
+
+    def _map_targets(self):
+        """(локация, маркеры целей в текущей зоне) или None, если охотиться по карте нельзя."""
+        if not self.settings.hunt_targets or self._companion is None or self._location_fn is None:
+            return None
+        where = self._location_fn()
+        catalog = self._catalog_fn()
+        if not where or catalog is None:
+            return None
+        location, area = where
+        targets = set(self.settings.hunt_targets)
+        by_id = {s.id: s for s in catalog.species}
+        markers = []
+        for m in self._companion.markers(location):
+            species = by_id.get(m.species_id)
+            if m.name in targets and (species is None or species_in_zone(species, location, area)):
+                markers.append(m)
+        return (location, markers) if markers else None
+
+    def _view(self):
+        """(прямоугольник обзора на скриншоте, картинка обзора) — окно игры без интерфейса."""
+        game = self._game_rect_fn() if self._game_rect_fn else None
+        if game is None:
+            raise Stuck("не нашёл окно игры")
+        x, y, w, h = view_rect(game)
+        return (x, y, w, h), self.eyes.image[y:y + h, x:x + w]
+
+    def _where(self, location):
+        """Где сейчас экран на карте локации: (обзор, Placement)."""
+        locator = self._locators.get(location)
+        if locator is None:
+            world = self._companion.map_image(location)
+            if world is None:
+                raise Stuck(f"нет карты локации {location}")
+            locator = self._locators[location] = Locator(world)
+        self.eyes.look()
+        rect, view = self._view()
+        place = locator.locate(view)
+        if place is None:
+            raise Stuck("не нашёл себя на карте локации")
+        self._emit("position", (location, place, rect))
+        return rect, place
+
+    def _marker_on_screen(self, location, marker, margin=60):
+        rect, place = self._where(location)
+        vx, vy = to_view(place, (marker.x, marker.y))
+        x, y, w, h = rect
+        inside = margin <= vx <= w - margin and margin <= vy <= h - margin
+        return rect, place, (x + vx, y + vy), inside
+
+    def _walk_to(self, location, marker):
+        """Идёт к маркеру кликами по земле, пока он не окажется на экране. Прямоугольник для клика или None."""
+        turns = [0.0, 0.6, -0.6, 1.2, -1.2]
+        turn = 0
+        for _ in range(WALK_STEPS):
+            rect, place, (sx, sy), inside = self._marker_on_screen(location, marker)
+            if inside:
+                return int(sx) - CLICK_HALF, int(sy) - CLICK_HALF, 2 * CLICK_HALF, 2 * CLICK_HALF
+            x, y, w, h = rect
+            cx, cy = x + w / 2, y + h / 2  # камера держит персонажа примерно в центре
+            angle = math.atan2(sy - cy, sx - cx) + turns[turn % len(turns)]
+            px = min(max(cx + math.cos(angle) * w * 0.36, x + 40), x + w - 40)
+            py = min(max(cy + math.sin(angle) * h * 0.36, y + 40), y + h - 40)
+            self._state(f"иду к точке {marker.name}")
+            self._press((int(px) - 10, int(py) - 10, 20, 20), f"walk → {marker.name}")
+            before = place
+            place = self._settle(location, before)
+            moved = math.hypot(place.mx - before.mx, place.my - before.my) / place.scale
+            turn = 0 if moved > 40 else turn + 1  # упёрлись — пробуем обойти под другим углом
+        return None
+
+    def _settle(self, location, before):
+        """Ждёт, пока камера перестанет ехать (персонаж дошёл). Последнее положение на карте."""
+        last = before
+        still = 0
+        end = time.monotonic() + 8
+        self._sleep(0.6)
+        while time.monotonic() < end:
+            _, place = self._where(location)
+            if math.hypot(place.mx - last.mx, place.my - last.my) / place.scale < 4:
+                still += 1
+                if still >= 2:
+                    return place
+            else:
+                still = 0
+            last = place
+            self._sleep(0.3)
+        return last
+
+    def _map_hunt(self) -> bool:
+        found = self._map_targets()
+        if found is None:
+            return False
+        location, markers = found
+        cooldown = self.settings.spot_cooldown + 1
+        now = time.monotonic()
+        key = lambda m: (location, m.name, round(m.x), round(m.y))  # noqa: E731
+        ready = [m for m in markers if now - self._marker_used.get(key(m), float("-inf")) >= cooldown]
+        if not ready:
+            wait = min(cooldown - (now - self._marker_used[key(m)]) for m in markers)
+            self._state(f"точки целей на кулдауне, жду {wait:.0f} с")
+            self._sleep(wait + random.uniform(0.3, 1.5))
+            return True
+        _, place = self._where(location)
+        centre = to_map(place, (self._view()[0][2] / 2, self._view()[0][3] / 2))
+        marker = min(ready, key=lambda m: math.hypot(m.x - centre[0], m.y - centre[1]))
+        rect = self._walk_to(location, marker)
+        if rect is None:
+            self._say(f"не дошёл до точки {marker.name} — попробую позже")
+            self._marker_used[key(marker)] = time.monotonic()
+            return True
+
+        def relocate():
+            _, _, (sx, sy), inside = self._marker_on_screen(location, marker)
+            return (int(sx) - CLICK_HALF, int(sy) - CLICK_HALF, 2 * CLICK_HALF, 2 * CLICK_HALF) if inside else None
+
+        clicked_at, enemy = self._search(rect, relocate, f"точка {marker.name}")
+        self._marker_used[key(marker)] = clicked_at
+        return True
 
     # ---- бой ----
 
