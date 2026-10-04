@@ -44,6 +44,28 @@ def my_stats(species, owned: dict) -> dict:
     return stats_at(species, owned.get("l", 1), rolls, bonuses)
 
 
+def stats_pair(catalog, player, attacker, attacker_level, enemy, enemy_level, enemy_rank):
+    """(статы моего крита, статы противника) для формулы урона или None.
+    Мои — по данным игры (уровень, броски, бонусы); если копий вида несколько — та, что на этом уровне.
+    Противник — по тирам вида, уровню с панели и среднему броску по рангу."""
+    if catalog is None:
+        return None
+    by_name = {n: s for s in catalog.species for n in s.names}
+    mine, other = by_name.get(attacker), by_name.get(enemy)
+    if mine is None or other is None:
+        return None
+    copies = [m for m in (player.miscrits if player else []) if m.get("m") == mine.id]
+    if attacker_level:
+        copies = [m for m in copies if m.get("l") == attacker_level] or copies
+    if copies:
+        attacker_stats = my_stats(mine, max(copies, key=lambda m: m.get("l", 0)))
+    else:
+        attacker_stats = stats_at(mine, attacker_level or 1)
+    roll = rank_roll(enemy_rank)
+    enemy_stats = stats_at(other, enemy_level or 1, {k: roll for k in BASE})
+    return attacker_stats, enemy_stats
+
+
 def rank_roll(rank: str | None) -> float:
     """Средний бросок по рангу: ранг — сумма шести бросков (F = 7 … S+ = 18)."""
     order = ("F", "F+", "D", "D+", "C", "C+", "B", "B+", "A", "A+", "S", "S+")

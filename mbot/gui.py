@@ -32,6 +32,10 @@ from .location_dialog import LocationDialog, spots_from_points
 from .screen import Ocr, around, crop, grab, monitors_on_image, to_image, to_screen
 from .gamewindow import game_client_rect
 from .settings import Settings, bot_dir, save_settings
+from .brain.combat import DamageModel
+from .brain.formula import stats_pair
+from .brain.hits import HitBook
+from .damage_report import attackers, groups, recent
 from .ranks import RANKS, RankBook, unknown_samples
 from .worldmap import Companion, Locator, view_rect
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
@@ -144,7 +148,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         for widget, title in ((self._bot_tab(), "▶  Бот"), (self._hunt_tab(), "🎯  Охота"),
-                              (self._teach_tab(), "🎓  Обучение"), (self._ranks_tab(), "🏅  Ранги"), (self._routes_tab(), "📍  Точки и маршруты"),
+                              (self._teach_tab(), "🎓  Обучение"), (self._ranks_tab(), "🏅  Ранги"), (self._damage_tab(), "💥  Урон"), (self._routes_tab(), "📍  Точки и маршруты"),
                               (self._settings_tab(), "⚙  Настройки"), (self._log_tab(), "📜  Журнал")):
             tabs.addTab(widget, title)
         page = QWidget()
@@ -464,6 +468,7 @@ class MainWindow(QMainWindow):
             self.battle_title.setText("⚔  Сейчас не в бою")
         elif kind == "stats":
             self._show_stats(data)
+            self._refresh_damage()
             self._hunt_summary()
 
     def _show_stats(self, stats):
@@ -779,6 +784,135 @@ class MainWindow(QMainWindow):
             self.hunt_map.setPixmap(pixmap)
         else:
             self.hunt_map.setText("Для этого вида карты нет.")
+
+    # ---------- вкладка «Урон» ----------
+
+    def _damage_tab(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("page")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(12)
+        v.addWidget(_hint(
+            "Что бот узнал об уроне ваших критов. «Добивающих» — удары, после которых цель умерла: точный урон не виден, "
+            "известно только «не меньше». Прогноз в бою берётся из этих ударов, а где их мало — из формулы со статами."))
+        top = QHBoxLayout()
+        top.setSpacing(12)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("Криты"))
+        self.damage_crits = QListWidget()
+        self.damage_crits.setMaximumWidth(240)
+        self.damage_crits.currentRowChanged.connect(self._show_damage_crit)
+        left.addWidget(self.damage_crits, 1)
+        refresh = QPushButton("Обновить")
+        refresh.clicked.connect(self._refresh_damage)
+        left.addWidget(refresh)
+        top.addLayout(left)
+        right = QVBoxLayout()
+        self.damage_title = QLabel("")
+        self.damage_title.setObjectName("sectionTitle")
+        right.addWidget(self.damage_title)
+        self.damage_table = QTableWidget(0, 10)
+        self.damage_table.setHorizontalHeaderLabels(["Атака", "Стихия", "× ударов", "По стихии", "Попаданий",
+                                                     "Добивающих", "Промахов", "Средний урон", "Мин–макс",
+                                                     "% HP цели"])
+        for table in (self.damage_table,):
+            table.verticalHeader().setVisible(False)
+            table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            table.setAlternatingRowColors(True)
+            table.setShowGrid(False)
+            table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        right.addWidget(self.damage_table, 2)
+        recent_title = QLabel("Последние удары")
+        recent_title.setObjectName("sectionTitle")
+        right.addWidget(recent_title)
+        self.damage_recent = QTableWidget(0, 7)
+        self.damage_recent.setHorizontalHeaderLabels(["Время", "Атака", "Противник", "Ур.", "Ранг", "Урон", "HP цели"])
+        self.damage_recent.verticalHeader().setVisible(False)
+        self.damage_recent.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.damage_recent.setAlternatingRowColors(True)
+        self.damage_recent.setShowGrid(False)
+        self.damage_recent.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        right.addWidget(self.damage_recent, 2)
+        top.addLayout(right, 1)
+        v.addLayout(top, 1)
+        self.damage_calibration = QLabel("")
+        self.damage_calibration.setWordWrap(True)
+        v.addWidget(self.damage_calibration)
+        self._damage_book = None
+        QTimer.singleShot(400, self._refresh_damage)
+        return w
+
+    def _load_damage_book(self):
+        if self.bot is not None:
+            return self.bot.hits  # тот же журнал, что у работающего бота
+        player = self.hud.controller.player
+        return HitBook(self.home / "hits.csv", DamageModel(),
+                       stats=lambda *a: stats_pair(self.catalogs.get(), player, *a))
+
+    def _refresh_damage(self):
+        self._damage_book = self._load_damage_book()
+        current = self.damage_crits.currentItem().data(Qt.UserRole) if self.damage_crits.currentItem() else None
+        self.damage_crits.blockSignals(True)
+        self.damage_crits.clear()
+        rows = attackers(self._damage_book.hits)
+        for name, level, count in rows:
+            item = QListWidgetItem(f"{name}" + (f" · ур. {level}" if level else "") + f"\n{count} ударов")
+            item.setData(Qt.UserRole, name)
+            icon = self._icon(name) if hasattr(self, "_icon_store") else None
+            if icon is not None:
+                item.setIcon(icon)
+            self.damage_crits.addItem(item)
+        self.damage_crits.blockSignals(False)
+        if not rows:
+            self.damage_title.setText("Журнал ударов пока пуст — бот заполнит его в боях")
+            self.damage_table.setRowCount(0)
+            self.damage_recent.setRowCount(0)
+        else:
+            names = [r[0] for r in rows]
+            self.damage_crits.setCurrentRow(names.index(current) if current in names else 0)
+            self._show_damage_crit(self.damage_crits.currentRow())
+        cal = self._damage_book.calibration()
+        if cal is None:
+            self.damage_calibration.setText(f"<span style='color:{theme.MUTED}'>Формула ещё не подогнана: "
+                                            f"нужно хотя бы 3 точных удара.</span>")
+        else:
+            self.damage_calibration.setText(
+                f"<b>Формула</b> (подогнана по {cal.n} ударам): стихийные ×{cal.scale:.2f}, физические ×{cal.physical:.2f}, "
+                f"многоударные ×{cal.multi:.2f} · стихия сильнее ×{cal.strong:.2f}, слабее ×{cal.weak:.2f} · "
+                f"разброс одиночных ±{cal.spread * 100:.0f}%, многоударных ±{cal.multi_spread * 100:.0f}%")
+
+    def _show_damage_crit(self, row):
+        item = self.damage_crits.item(row) if row >= 0 else None
+        if item is None or self._damage_book is None:
+            return
+        name = item.data(Qt.UserRole)
+        hits = self._damage_book.hits
+        self.damage_title.setText(f"{name}: что известно об уроне")
+        data = groups(hits, name)
+        self.damage_table.setRowCount(len(data))
+        for i, g in enumerate(data):
+            cells = (g.ability, g.atk_element, f"×{g.times}" if g.times > 1 else "1", g.enemy_element, str(g.hits),
+                     str(g.kills), str(g.misses), f"{g.mean:.0f}" if g.hits else "—",
+                     f"{g.low}–{g.high}" if g.hits else (f"≥{g.high}" if g.kills else "—"),
+                     f"{g.share:.0f}" if g.hits else "—")
+            for col, value in enumerate(cells):
+                cell = QTableWidgetItem(value)
+                if col in (1, 3):
+                    cell.setForeground(QColor(theme.element_color(value) if value != "Physical" else theme.MUTED))
+                self.damage_table.setItem(i, col, cell)
+        last = recent(hits, name)
+        self.damage_recent.setRowCount(len(last))
+        for i, h in enumerate(last):
+            damage = f"≥{h.damage}" if h.kill else ("промах" if h.damage == 0 else str(h.damage))
+            cells = (h.time[11:19], h.ability, h.enemy, str(h.enemy_level or "?"), h.enemy_rank or "?", damage, str(h.enemy_max_hp))
+            for col, value in enumerate(cells):
+                cell = QTableWidgetItem(value)
+                if col == 5 and h.kill:
+                    cell.setForeground(QColor(theme.ACCENT))
+                elif col == 4:
+                    cell.setForeground(QColor(theme.rank_color(value)))
+                self.damage_recent.setItem(i, col, cell)
 
     # ---------- вкладка «Ранги» ----------
 

@@ -15,7 +15,7 @@ import numpy as np
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
-from .brain.formula import my_stats, rank_roll, stats_at
+from .brain.formula import stats_pair
 from .brain.hits import CaptureView, HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
@@ -890,27 +890,8 @@ class Bot:
                     f"{move.name},{hp_before},{forecast[0]:.0f},{forecast[1]:.0f},{forecast[2]}\n")
 
     def _stats_pair(self, attacker, attacker_level, enemy, enemy_level, enemy_rank):
-        """(статы моего крита, статы противника) для формулы урона или None.
-        Мои — по данным игры (уровень, броски, бонусы); если копий вида несколько — та, что на этом уровне.
-        Противник — по тирам вида, уровню с панели и среднему броску по рангу."""
-        catalog = self._catalog_fn()
-        if catalog is None:
-            return None
-        by_name = {n: s for s in catalog.species for n in s.names}
-        mine, other = by_name.get(attacker), by_name.get(enemy)
-        if mine is None or other is None:
-            return None
-        player = self._player_fn()
-        copies = [m for m in (player.miscrits if player else []) if m.get("m") == mine.id]
-        if attacker_level:
-            copies = [m for m in copies if m.get("l") == attacker_level] or copies
-        if copies:
-            attacker_stats = my_stats(mine, max(copies, key=lambda m: m.get("l", 0)))
-        else:
-            attacker_stats = stats_at(mine, attacker_level or 1)
-        roll = rank_roll(enemy_rank)
-        enemy_stats = stats_at(other, enemy_level or 1, {k: roll for k in ("hp", "spd", "ea", "pa", "ed", "pd")})
-        return attacker_stats, enemy_stats
+        return stats_pair(self._catalog_fn(), self._player_fn(), attacker, attacker_level, enemy, enemy_level,
+                          enemy_rank)
 
     def _first_ability(self, my_name, moves):
         """Первая способность на первой странице, если это атака (у многих критов она лечит)."""

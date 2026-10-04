@@ -41,6 +41,7 @@ class Hit:
     enemy_max_hp: int
     damage: int
     kill: bool = False  # удар добил: известно только «урон не меньше damage»
+    time: str = ""
 
     @property
     def power(self) -> int:
@@ -95,7 +96,7 @@ class HitBook:
         return Hit(row.get("attacker", ""), _int(row.get("attacker_level")), row.get("ability", ""), ap, times,
                    row.get("atk_element", ""), row.get("enemy", ""), row.get("enemy_element", ""),
                    _int(row.get("enemy_level")), row.get("enemy_rank") or None, max_hp, damage,
-                   (row.get("kill") or "") in ("1", "True", "true"))
+                   (row.get("kill") or "") in ("1", "True", "true"), row.get("time") or "")
 
     def record(self, attacker, attacker_level, move: Move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
                damage, enemy_rank=None, kill=False) -> None:
