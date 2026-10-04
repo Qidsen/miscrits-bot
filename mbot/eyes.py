@@ -126,6 +126,23 @@ def camera_shift(image, location, anchors) -> tuple | None:
     return int(np.median([g[0] for g in best])), int(np.median([g[1] for g in best]))
 
 
+BANNER_ELEMENTS = ("capture", "plat_capture")
+BANNER_THRESHOLD = 0.9
+
+
+def banner_of(snap):
+    """(картинка цветной плашки кнопки, её прямоугольник) — строки снимка, где больше половины пикселей
+    насыщенного цвета (оранжевая «Capture!»), без процентов шанса и фона над/под кнопкой."""
+    hsv = cv2.cvtColor(snap.image, cv2.COLOR_BGR2HSV)
+    colored = (hsv[:, :, 1] > 150) & (hsv[:, :, 2] > 150)
+    rows = np.nonzero(colored.mean(axis=1) > 0.5)[0]
+    if len(rows) < 8:
+        return snap.image, snap.rect
+    top, bottom = int(rows.min()), int(rows.max()) + 1
+    x, y, w, h = snap.rect
+    return snap.image[top:bottom], (x, y + top, w, bottom - top)
+
+
 def text_rows(image) -> tuple:
     """Строки снимка, где есть белый текст (± запас), — чтобы читать только строку сообщения, без соседних надписей."""
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -177,6 +194,10 @@ class Eyes:
         snap = self.teaching.elements.get(element_id)
         if snap is None or snap.image is None:
             return None
+        if element_id in BANNER_ELEMENTS:
+            # в снимок кнопки поимки попадают процент шанса и фон — они меняются; ищем только саму плашку
+            banner, near = banner_of(snap)
+            return find(self.image, banner, BANNER_THRESHOLD, near=near)
         return find(self.image, snap.image, self.threshold, near=snap.rect)
 
     def sees_snap(self, snap, threshold=None, anywhere=False):

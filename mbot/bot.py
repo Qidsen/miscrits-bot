@@ -34,6 +34,26 @@ MISS_RETRIES = 2
 EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
+NO_CAPTURE_TURNS = 2  # столько ходов подряд не видим Capture, когда надо ловить, — пауза и скриншот
+# способности, которыми можно тянуть время при поимке: не трогают HP цели
+SAFE_STALL_TYPES = {"Buff", "Heal", "Hot", "Block", "Cleanser", "Negate", "Antiheal", "Sleep", "Paralyze"}
+DAMAGING_TYPES = {"Attack", "Dot", "Poison", "Bleed", "TimeBomb", "Disease", "Confuse", "Barbed", "LifeSteal", "Bot"}
+
+
+def safe_stall(species, names) -> list:
+    """Способности из names, которые точно не нанесут урон цели (и в дополнительных эффектах тоже)."""
+    by_name = {a.get("name"): a for a in species.abilities} if species else {}
+    out = []
+    for name in names:
+        a = by_name.get(name)
+        if a is None or a.get("type") not in SAFE_STALL_TYPES:
+            continue
+        extra = {x.get("type") for x in (a.get("additional") or []) if isinstance(x, dict)}
+        if extra & DAMAGING_TYPES:
+            continue
+        out.append(name)
+    # сначала то, что на себя (баффы, лечение, блок), — меньше всего риска
+    return sorted(out, key=lambda n: (by_name[n].get("target") != "Self", n))
 PAGE_READ_TRIES = 3  # столько раз перечитываем страницы способностей, если на них остались «?»
 LIGHT_BUTTONS_AFTER = 4.0  # с: столько ждём обученный «Мой ход», прежде чем верить светлым кнопкам
 MY_TURN_STRICT = 0.93  # картинка «Мой ход» — строгий порог: в строке сообщений любой текст похож на любой
@@ -546,6 +566,7 @@ class Bot:
         my_ratio = 1.0
         captured = False
         switched = None  # (портрет, кто был до смены) — на следующем ходу узнаем, получилось ли
+        no_capture_turns = 0  # сколько ходов подряд хотим поймать, а кнопки Capture нет
         explore_switch_done = False
         self._state("бой")
         while True:
@@ -669,16 +690,26 @@ class Bot:
                     self._sleep(2.5)
                     continue
                 if action.kind == STALL:
-                    if not extras and precious:
-                        # нечем безопасно занять ход, а ошибка тут — убитый экзотик/легендарка: пусть решит человек
-                        self._say(f"⚠ {enemy.names[0]} ({enemy.rarity}): нет безопасного хода — пауза, сходите сами")
-                        self.pause(f"{enemy.names[0]}: нет безопасного хода — сделайте ход сами и снимите паузу")
+                    # поймать сейчас нельзя, а бить опасно: занимаем ход тем, что точно не тронет HP цели
+                    # (никакого яда, кровотечения и прочего урона по ходам — так однажды добили Quirk)
+                    safe = safe_stall(me, extras)
+                    no_capture_turns += 1
+                    if not safe or no_capture_turns >= NO_CAPTURE_TURNS:
+                        why = ("кнопку Capture не вижу уже " + str(no_capture_turns) + " хода") if safe else \
+                            "нет способности, которая точно не нанесёт урон"
+                        shot = self._screenshot("cannot-capture")
+                        self._say(f"⚠ {enemy.names[0] if enemy else '?'}: {why} — пауза, сходите сами (скриншот: {shot})")
+                        self.pause(f"поимка: {why} — сделайте ход сами и снимите паузу")
                         self._checkpoint()
+                        no_capture_turns = 0
                         last = None
                         continue
-                    self._use_any(extras or [min(moves, key=lambda m: m.power).name], my_name)
+                    self._say(f"тяну время: {safe[0]} (не наносит урон), поймать сейчас нельзя")
+                    self._use(safe[0], my_name)
+                    self._park_mouse()
                     last = None
                     continue
+                no_capture_turns = 0
                 move = action.move
             else:
                 move = None
