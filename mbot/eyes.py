@@ -122,9 +122,10 @@ def camera_shift(image, location, anchors) -> tuple | None:
 
 
 class Eyes:
-    def __init__(self, teaching, ocr, threshold: float, grabber=grab):
+    def __init__(self, teaching, ocr, threshold: float, grabber=grab, ranks=None):
         self.teaching = teaching
         self.ocr = ocr
+        self.ranks = ranks  # RankBook: ранг по образцам значков
         self.threshold = threshold
         self._grab = grabber
         self.image = None
@@ -222,10 +223,12 @@ class Eyes:
         return self._read(element_id, parse_percent, "0123456789%")
 
     def read_rank(self, element_id: str):
+        """Ранг по образцам значков; None — значок незнакомый (бот сохранит его на разметку).
+        OCR тут не используем: неверный ранг хуже неизвестного — по нему решается, ловить ли."""
         rect = self.region(element_id)
-        if rect is None or self.ocr is None:
+        if rect is None or self.ranks is None:
             return None
-        return self.ocr.rank(crop(self.image, rect))
+        return self.ranks.classify(crop(self.image, rect))
 
     def read_name(self, element_id: str, names):
         return self._read(element_id, lambda texts: best_name(texts, names))

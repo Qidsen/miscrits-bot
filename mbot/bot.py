@@ -620,6 +620,7 @@ class Bot:
         ok, buf = cv2.imencode(".png", self.eyes.image[y:y + h, x:x + w])
         if ok:
             (folder / f"{time.strftime('%Y%m%d-%H%M%S')}.png").write_bytes(buf.tobytes())
+            self._emit("rank_unknown", None)
 
     def _known_moves(self, my_name, species):
         """Атаки и прочие способности крита, которые видны на кнопках (все страницы)."""

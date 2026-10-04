@@ -8,6 +8,7 @@ from ctypes import wintypes
 from dataclasses import fields
 
 import cv2
+import numpy as np
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -31,6 +32,7 @@ from .location_dialog import LocationDialog, spots_from_points
 from .screen import Ocr, around, crop, grab, monitors_on_image, to_image, to_screen
 from .gamewindow import game_client_rect
 from .settings import Settings, bot_dir, save_settings
+from .ranks import RANKS, RankBook, unknown_samples
 from .worldmap import Companion, Locator, view_rect
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
 
@@ -131,6 +133,7 @@ class MainWindow(QMainWindow):
         logging.getLogger("mbot").addHandler(handler)
         self.catalogs = CatalogCache(game_data_dir() / "image_cache" / "miscrits.json")
         self.companion = Companion(bot_dir() / "companion")
+        self.rank_book = RankBook(bot_dir() / "ranks_book")
         self.bot = None
         self.capture_mode = None  # ("element", id) | ("spot",) | ("route", имя)
         self.region_corner = None
@@ -138,7 +141,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         for widget, title in ((self._bot_tab(), "▶  Бот"), (self._hunt_tab(), "🎯  Охота"),
-                              (self._teach_tab(), "🎓  Обучение"), (self._routes_tab(), "📍  Точки и маршруты"),
+                              (self._teach_tab(), "🎓  Обучение"), (self._ranks_tab(), "🏅  Ранги"), (self._routes_tab(), "📍  Точки и маршруты"),
                               (self._settings_tab(), "⚙  Настройки"), (self._log_tab(), "📜  Журнал")):
             tabs.addTab(widget, title)
         page = QWidget()
@@ -309,7 +312,7 @@ class MainWindow(QMainWindow):
         if blocking:
             QMessageBox.warning(self, "Бот не готов", "\n".join(blocking))
             return
-        eyes = Eyes(self.teaching, Ocr(self.settings.tesseract_cmd), self.settings.match_threshold)
+        eyes = Eyes(self.teaching, Ocr(self.settings.tesseract_cmd), self.settings.match_threshold, ranks=self.rank_book)
         logs = self.home / "logs"
         logs.mkdir(exist_ok=True)
         self.bot = Bot(
@@ -357,6 +360,8 @@ class MainWindow(QMainWindow):
         elif kind == "teaching_changed":
             save_teaching(self.teaching_path, self.teaching)
             self._refresh_spot_list()
+        elif kind == "rank_unknown":
+            self._refresh_ranks()
         elif kind == "position":
             self._show_position(*data)
         elif kind == "position_failed":
@@ -681,6 +686,87 @@ class MainWindow(QMainWindow):
         else:
             self.hunt_map.setText("Для этого вида карты нет.")
 
+    # ---------- вкладка «Ранги» ----------
+
+    def _ranks_tab(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("page")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(12)
+        v.addWidget(_hint(
+            "Ранг дикого крита бот узнаёт по образцам значков: у каждой буквы свой цвет и форма. Если значок ему "
+            "незнаком, он не угадывает, а сохраняет его сюда. Выберите значок, укажите ранг и нажмите «Запомнить» — "
+            "дальше бот будет узнавать такой ранг сам. Хватает одного образца на ранг."))
+        self.rank_counts = QLabel("")
+        self.rank_counts.setWordWrap(True)
+        v.addWidget(self.rank_counts)
+        self.rank_list = QListWidget()
+        self.rank_list.setViewMode(QListWidget.IconMode)
+        self.rank_list.setIconSize(QSize(96, 93))
+        self.rank_list.setGridSize(QSize(120, 130))
+        self.rank_list.setResizeMode(QListWidget.Adjust)
+        v.addWidget(self.rank_list, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Это ранг:"))
+        self.rank_choice = QComboBox()
+        self.rank_choice.addItems(list(RANKS))
+        row.addWidget(self.rank_choice)
+        remember = _primary("Запомнить выбранный")
+        remember.clicked.connect(self._remember_rank)
+        drop = QPushButton("Удалить выбранный")
+        drop.clicked.connect(self._drop_rank_sample)
+        refresh = QPushButton("Обновить")
+        refresh.clicked.connect(self._refresh_ranks)
+        for b in (remember, drop, refresh):
+            row.addWidget(b)
+        row.addStretch(1)
+        v.addLayout(row)
+        QTimer.singleShot(300, self._refresh_ranks)
+        return w
+
+    def _rank_samples_dir(self):
+        return self.home / "logs" / "ranks"
+
+    def _refresh_ranks(self):
+        counts = self.rank_book.counts()
+        known = ", ".join(f"<b style='color:{theme.rank_color(r)}'>{r}</b>×{counts[r]}" for r in RANKS if r in counts)
+        missing = [r for r in RANKS if r not in counts]
+        self.rank_counts.setText(f"Знаю: {known or '—'}<br><span style='color:{theme.MUTED}'>Ещё не видел: "
+                                 f"{', '.join(missing) or 'все знаю'}</span>")
+        self.rank_list.clear()
+        self._rank_files = unknown_samples(self._rank_samples_dir())
+        for path in self._rank_files:
+            image = cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_COLOR)
+            item = QListWidgetItem(time.strftime("%H:%M", time.localtime(path.stat().st_mtime)))
+            if image is not None:
+                item.setIcon(QIcon(to_pixmap(image, 96, 93)))
+            self.rank_list.addItem(item)
+        if not self._rank_files:
+            self.rank_list.addItem(QListWidgetItem("Незнакомых значков нет 👍"))
+
+    def _selected_rank_file(self):
+        row = self.rank_list.currentRow()
+        files = getattr(self, "_rank_files", [])
+        return files[row] if 0 <= row < len(files) else None
+
+    def _remember_rank(self):
+        path = self._selected_rank_file()
+        if path is None:
+            QMessageBox.information(self, "Ранги", "Выберите значок в списке.")
+            return
+        image = cv2.imdecode(np.fromfile(str(path), np.uint8), cv2.IMREAD_COLOR)
+        if image is not None:
+            self.rank_book.learn(self.rank_choice.currentText(), image)
+        path.unlink(missing_ok=True)
+        self._refresh_ranks()
+
+    def _drop_rank_sample(self):
+        path = self._selected_rank_file()
+        if path is not None:
+            path.unlink(missing_ok=True)
+            self._refresh_ranks()
+
     # ---------- вкладка «Обучение» ----------
 
     def _teach_tab(self) -> QWidget:
@@ -814,7 +900,8 @@ class MainWindow(QMainWindow):
 
     def _test_screen(self):
         image = grab()
-        eyes = Eyes(self.teaching, Ocr(self.settings.tesseract_cmd), self.settings.match_threshold, lambda: image)
+        eyes = Eyes(self.teaching, Ocr(self.settings.tesseract_cmd), self.settings.match_threshold, lambda: image,
+                    ranks=self.rank_book)
         eyes.look()
         catalog = self.catalogs.get()
         all_names = [n for s in catalog.species for n in s.names] if catalog else []
