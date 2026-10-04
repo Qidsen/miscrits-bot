@@ -551,9 +551,13 @@ class Bot:
             turn = self._wait_turn()
             if turn is None:
                 self.eyes.look()
-                if self.eyes.sees("battle") is None:
+                if self.eyes.sees("battle") is not None:
+                    raise Stuck("бой: не дождался своего хода")
+                # экран боя пропал, а окно победы/поимки ещё не появилось — подождём его, чтобы не потерять
+                # добивающий удар (иначе он не попадёт в журнал)
+                turn, _ = self._wait_for(("battle_won", "captured"), timeout=4)
+                if turn is None:
                     break
-                raise Stuck("бой: не дождался своего хода")
             if turn == "captured":
                 captured = True
                 break
