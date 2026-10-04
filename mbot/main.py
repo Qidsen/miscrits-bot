@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from miscrits_hud.app import acquire_single_instance, setup_logging, start_hud
 from miscrits_hud.config import app_dir
 
+from . import theme
 from .gui import MainWindow
 from .settings import bot_dir, load_settings
 from .storage import load_teaching
@@ -25,6 +26,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Miscrits")
+    theme.apply(app)
     lock = acquire_single_instance(hud_home)
     if lock is None:
         QMessageBox.warning(None, "Miscrits", "Программа уже запущена (или открыт старый MiscritsHUD.exe — закройте его).")

@@ -1,4 +1,4 @@
-﻿"""Главное окно: управление ботом, обучение элементов и маршрутов, настройки, журнал."""
+"""Главное окно: управление ботом, обучение элементов и маршрутов, настройки, журнал."""
 
 import logging
 import threading
@@ -8,10 +8,10 @@ from ctypes import wintypes
 from dataclasses import fields
 
 import cv2
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QImage, QPixmap
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox,
+    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
     QVBoxLayout, QWidget,
@@ -19,9 +19,10 @@ from PySide6.QtWidgets import (
 
 from miscrits_hud import hotkeys
 from miscrits_hud.catalog import CatalogCache
-from miscrits_hud.config import game_data_dir
+from miscrits_hud.config import app_dir, game_data_dir
+from miscrits_hud.icons import IconStore
 
-from . import mouse
+from . import mouse, theme
 from .bot import Bot
 from .collection import Collection
 from .eyes import Eyes
@@ -63,6 +64,28 @@ def to_pixmap(image, max_w=160, max_h=60) -> QPixmap:
     return QPixmap.fromImage(qimage).scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
 
+SETTING_GROUPS = (
+    ("Поведение и перерывы", ("delay_min", "delay_max", "break_every_min", "break_every_max",
+                              "break_len_min", "break_len_max", "session_limit_min")),
+    ("Охота и бой", ("spot_cooldown", "kill_with_first", "capture_min_chance", "plat_capture_limit",
+                     "heal_below", "train_every")),
+    ("Распознавание", ("match_threshold", "button_size", "tesseract_cmd")),
+)
+
+
+def _hint(text="") -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("hint")
+    label.setWordWrap(True)
+    return label
+
+
+def _primary(text) -> QPushButton:
+    button = QPushButton(text)
+    button.setObjectName("primary")
+    return button
+
+
 class Bridge(QObject):
     """События из потока бота и логгера → в поток Qt."""
     event = Signal(str, object)
@@ -82,6 +105,7 @@ class MainWindow(QMainWindow):
     def __init__(self, hud, teaching, teaching_path, settings: Settings, settings_path, home):
         super().__init__()
         self.setWindowTitle("Miscrits Bot")
+        theme.style_window(self)
         self.resize(980, 720)
         self.hud = hud
         self.teaching = teaching
@@ -100,17 +124,24 @@ class MainWindow(QMainWindow):
         self.region_corner = None
 
         tabs = QTabWidget()
-        tabs.addTab(self._bot_tab(), "Бот")
-        tabs.addTab(self._hunt_tab(), "Охота")
-        tabs.addTab(self._teach_tab(), "Обучение")
-        tabs.addTab(self._routes_tab(), "Точки и маршруты")
-        tabs.addTab(self._settings_tab(), "Настройки")
-        tabs.addTab(self._log_tab(), "Журнал")
-        self.setCentralWidget(tabs)
+        tabs.setDocumentMode(True)
+        for widget, title in ((self._bot_tab(), "▶  Бот"), (self._hunt_tab(), "🎯  Охота"),
+                              (self._teach_tab(), "🎓  Обучение"), (self._routes_tab(), "📍  Точки и маршруты"),
+                              (self._settings_tab(), "⚙  Настройки"), (self._log_tab(), "📜  Журнал")):
+            tabs.addTab(widget, title)
+        page = QWidget()
+        page.setObjectName("page")
+        root = QVBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._header())
+        root.addWidget(tabs, 1)
+        self.setCentralWidget(page)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._refresh_status)
         self.timer.start(1000)
+        self._set_state("stopped", "Остановлен")
         self._refresh_all()
 
     # ---------- горячие клавиши ----------
@@ -135,49 +166,108 @@ class MainWindow(QMainWindow):
 
     # ---------- вкладка «Бот» ----------
 
+    def _header(self) -> QWidget:
+        header = QFrame()
+        header.setObjectName("header")
+        row = QHBoxLayout(header)
+        row.setContentsMargins(20, 14, 20, 14)
+        logo = QLabel()
+        logo.setPixmap(theme.app_icon().pixmap(40, 40))
+        row.addWidget(logo)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        title = QLabel("Miscrits Bot")
+        title.setObjectName("appTitle")
+        subtitle = QLabel("охота · прокачка · HUD коллекции")
+        subtitle.setObjectName("appSubtitle")
+        titles.addWidget(title)
+        titles.addWidget(subtitle)
+        row.addLayout(titles)
+        row.addStretch(1)
+        hotkeys_hint = QLabel("F6 пауза · F7 стоп · F4 снять · мышь в угол — аварийный стоп")
+        hotkeys_hint.setObjectName("appSubtitle")
+        row.addWidget(hotkeys_hint)
+        row.addSpacing(16)
+        self.pill = QLabel()
+        self.pill.setObjectName("statusPill")
+        row.addWidget(self.pill)
+        return header
+
+    def _set_state(self, state: str, text: str):
+        """state: running / paused / stopped — цвет «пилюли» в шапке и заголовок на вкладке «Бот»."""
+        self._state = state
+        self.pill.setText({"running": "● Работает", "paused": "❚❚ Пауза", "stopped": "■ Остановлен"}[state])
+        self.pill.setStyleSheet(theme.pill_style(state))
+        self.status.setText(text)
+
+    @staticmethod
+    def _card(caption: str) -> tuple:
+        card = QFrame()
+        card.setObjectName("card")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(16, 12, 16, 12)
+        value = QLabel("0")
+        value.setObjectName("cardValue")
+        label = QLabel(caption)
+        label.setObjectName("cardCaption")
+        v.addWidget(value)
+        v.addWidget(label)
+        return card, value
+
     def _bot_tab(self) -> QWidget:
         w = QWidget()
+        w.setObjectName("page")
         v = QVBoxLayout(w)
-        self.status = QLabel("Остановлен")
-        self.status.setFont(QFont("Segoe UI", 16, QFont.Bold))
-        v.addWidget(self.status)
-        self.substatus = QLabel("")
-        self.substatus.setWordWrap(True)
-        v.addWidget(self.substatus)
+        v.setContentsMargins(20, 18, 20, 18)
+        v.setSpacing(14)
 
-        row = QHBoxLayout()
-        self.start_btn = QPushButton("▶ Старт")
-        self.pause_btn = QPushButton("⏸ Пауза (F6)")
-        self.stop_btn = QPushButton("■ Стоп (F7)")
+        top = QHBoxLayout()
+        state_box = QVBoxLayout()
+        self.status = QLabel("Остановлен")
+        self.status.setObjectName("sectionTitle")
+        self.substatus = QLabel("Нажмите «Старт» и переключитесь в игру")
+        self.substatus.setObjectName("bigState")
+        self.substatus.setWordWrap(True)
+        state_box.addWidget(self.status)
+        state_box.addWidget(self.substatus)
+        top.addLayout(state_box, 1)
+        self.start_btn = QPushButton("▶  Старт")
+        self.start_btn.setObjectName("start")
+        self.pause_btn = QPushButton("❚❚  Пауза")
+        self.pause_btn.setObjectName("pause")
+        self.stop_btn = QPushButton("■  Стоп")
+        self.stop_btn.setObjectName("stop")
         for b in (self.start_btn, self.pause_btn, self.stop_btn):
-            b.setMinimumHeight(40)
-            row.addWidget(b)
+            b.setMinimumSize(130, 46)
+            b.setCursor(Qt.PointingHandCursor)
+            top.addWidget(b)
         self.start_btn.clicked.connect(self._on_start)
         self.pause_btn.clicked.connect(self._on_pause)
         self.stop_btn.clicked.connect(self._on_stop)
-        v.addLayout(row)
+        v.addLayout(top)
 
-        box = QGroupBox("Сессия")
-        grid = QGridLayout(box)
+        cards = QGridLayout()
+        cards.setSpacing(12)
         self.stat_labels = {}
-        for i, (key, title) in enumerate((("battles", "Боёв"), ("captures", "Поймано"),
-                                          ("plat_captures", "Из них за платину"), ("trainings", "Тренировок"),
-                                          ("heals", "Походов к лекарю"), ("time", "Время"))):
-            grid.addWidget(QLabel(title), i // 3, (i % 3) * 2)
-            label = QLabel("0")
-            label.setFont(QFont("Segoe UI", 12, QFont.Bold))
-            grid.addWidget(label, i // 3, (i % 3) * 2 + 1)
-            self.stat_labels[key] = label
-        v.addWidget(box)
+        for i, (key, title) in enumerate((("battles", "боёв"), ("captures", "поймано"),
+                                          ("plat_captures", "за платину"), ("trainings", "тренировок"),
+                                          ("heals", "походов к лекарю"), ("time", "в работе"))):
+            card, value = self._card(title)
+            cards.addWidget(card, 0, i)
+            self.stat_labels[key] = value
+        self.stat_labels["time"].setText("0:00")
+        v.addLayout(cards)
 
         self.checks = QLabel("")
         self.checks.setWordWrap(True)
         v.addWidget(self.checks)
 
-        v.addWidget(QLabel("События:"))
+        events_title = QLabel("События")
+        events_title.setObjectName("sectionTitle")
+        v.addWidget(events_title)
         self.events = QListWidget()
+        self.events.setAlternatingRowColors(True)
         v.addWidget(self.events, 1)
-        v.addWidget(QLabel("Аварийный стоп: резко уведите мышь в левый верхний угол экрана."))
         return w
 
     def _readiness(self) -> list:
@@ -214,7 +304,8 @@ class MainWindow(QMainWindow):
             foreground=lambda: hotkeys.foreground_process()[0],
         )
         self.bot.start()
-        self.status.setText("Работает — переключитесь в игру")
+        self._set_state("running", "Работает")
+        self.substatus.setText("Переключитесь в игру — бот действует, только когда её окно активно")
 
     def _on_pause(self):
         if self.bot and self.bot.running:
@@ -229,18 +320,25 @@ class MainWindow(QMainWindow):
             self.log_view.appendPlainText(data)
             return
         if kind == "log":
-            self.events.insertItem(0, f"{time.strftime('%H:%M:%S')}  {data}")
+            item = QListWidgetItem(f"{time.strftime('%H:%M:%S')}   {data}")
+            if data.startswith("ПОЙМАН"):
+                item.setForeground(QColor(theme.GREEN))
+            elif "ЛОВИМ" in data:
+                item.setForeground(QColor(theme.ACCENT))
+            elif data.startswith(("не понимаю", "ошибка", "аварийный", "маршрут")):
+                item.setForeground(QColor(theme.RED))
+            self.events.insertItem(0, item)
             while self.events.count() > 300:
                 self.events.takeItem(self.events.count() - 1)
         elif kind == "state":
             self.substatus.setText(data)
         elif kind == "paused":
-            self.status.setText("Пауза")
+            self._set_state("paused", "Пауза")
             self.substatus.setText(data)
         elif kind == "resumed":
-            self.status.setText("Работает")
+            self._set_state("running", "Работает")
         elif kind == "stopped":
-            self.status.setText("Остановлен")
+            self._set_state("stopped", "Остановлен")
         elif kind == "teaching_changed":
             save_teaching(self.teaching_path, self.teaching)
             self._refresh_spot_list()
@@ -257,22 +355,27 @@ class MainWindow(QMainWindow):
         if self.bot and self.bot.running:
             minutes = int((time.time() - self.bot.stats.started) // 60)
             self.stat_labels["time"].setText(f"{minutes // 60}:{minutes % 60:02d}")
-            if not self.bot._paused.is_set() and self.status.text() not in ("Работает",):
-                self.status.setText("Работает")
+            if not self.bot._paused.is_set() and self._state != "running":
+                self._set_state("running", "Работает")
         teaching_locked = bool(self.bot and self.bot.running)
         for b in self._teach_buttons + self._teach_buttons_routes:
             b.setEnabled(not teaching_locked)
 
     def _refresh_checks(self):
         problems = self._readiness()
-        self.checks.setText("✅ Всё готово к запуску" if not problems else "⚠ " + "\n⚠ ".join(problems))
+        self.checks.setObjectName("ok" if not problems else "warn")
+        self.checks.setStyleSheet("")  # перечитать стиль после смены objectName
+        self.checks.setText("✓  Всё готово к запуску" if not problems else "⚠  " + "\n⚠  ".join(problems))
 
     # ---------- вкладка «Охота» ----------
 
     def _hunt_tab(self) -> QWidget:
         w = QWidget()
+        w.setObjectName("page")
         v = QVBoxLayout(w)
-        explain = QLabel(
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(12)
+        explain = _hint(
             "Отметьте галочкой цели. На локации бот первым делом жмёт точку, где водится цель (её он узнаёт сам по "
             "встречам или по вашей подписи на вкладке «Точки и маршруты»), остальные точки — пока она на кулдауне. "
             "Ловится по-прежнему всё, чего нет или что лучше имеющегося.")
@@ -300,17 +403,38 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(4, QHeaderView.Stretch)
         v.addWidget(self.hunt_table, 1)
         bottom = QHBoxLayout()
-        self.hunt_map = QLabel("Выберите вид — покажу, где он на карте (Miscrits Companion).")
-        self.hunt_map.setMinimumSize(360, 240)
+        bottom.setSpacing(12)
+        map_card = QFrame()
+        map_card.setObjectName("card")
+        map_layout = QVBoxLayout(map_card)
+        map_layout.setContentsMargins(10, 10, 10, 10)
+        self.hunt_map = _hint("Выберите вид — покажу, где он на карте")
+        self.hunt_map.setFixedSize(360, 240)
         self.hunt_map.setAlignment(Qt.AlignCenter)
-        bottom.addWidget(self.hunt_map)
+        map_layout.addWidget(self.hunt_map)
+        bottom.addWidget(map_card)
+        targets_card = QFrame()
+        targets_card.setObjectName("card")
+        targets_layout = QVBoxLayout(targets_card)
+        targets_layout.setContentsMargins(16, 12, 16, 12)
+        targets_title = QLabel("🎯  Цели охоты")
+        targets_title.setObjectName("sectionTitle")
+        targets_layout.addWidget(targets_title)
         self.hunt_summary = QLabel("")
         self.hunt_summary.setWordWrap(True)
         self.hunt_summary.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        bottom.addWidget(self.hunt_summary, 1)
+        targets_layout.addWidget(self.hunt_summary, 1)
+        bottom.addWidget(targets_card, 1)
         v.addLayout(bottom)
         self._hunt_rows = []
         self._hunt_filling = False
+        self._icons = {}
+        self._icon_requested = set()
+        self._icon_store = IconStore(game_data_dir() / "image_cache" / "miscrits", app_dir() / "icons")
+        self.hunt_table.setIconSize(QSize(28, 28))
+        self.hunt_table.verticalHeader().setDefaultSectionSize(36)
+        self.hunt_table.setAlternatingRowColors(True)
+        self.hunt_table.setShowGrid(False)
         self._locmap_cache = {}
         self._wanted_map = None
         for widget in (self.hunt_today, self.hunt_missing, self.hunt_targets_only):
@@ -321,6 +445,23 @@ class MainWindow(QMainWindow):
         self.hunt_table.itemSelectionChanged.connect(self._hunt_selected)
         QTimer.singleShot(500, self._fill_hunt)
         return w
+
+    def _icon(self, name):
+        """Иконка мискрита из кэша игры/HUD; недостающие докачиваются в фоне и появятся при следующем обновлении."""
+        if name in self._icons:
+            return self._icons[name]
+        data = self._icon_store.get(name)
+        icon = None
+        if data:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(data):
+                icon = QIcon(pixmap)
+        elif name not in self._icon_requested:
+            self._icon_requested.add(name)
+            threading.Thread(target=lambda: self._icon_store.fetch(name), daemon=True).start()
+        if icon is not None:
+            self._icons[name] = icon
+        return icon
 
     def _collection(self):
         player = self.hud.controller.player
@@ -350,11 +491,26 @@ class MainWindow(QMainWindow):
             check.setCheckState(Qt.Checked if r.species.names[0] in targets else Qt.Unchecked)
             self.hunt_table.setItem(i, 0, check)
             name = r.species.names[0]
-            if len(r.species.names) > 1:
-                name += f"  ({' → '.join(r.species.names[1:])})"
-            for col, value in enumerate((name, r.species.rarity, r.species.element, r.where,
-                                         "да" if r.today else "", r.owned or "нет"), 1):
-                self.hunt_table.setItem(i, col, QTableWidgetItem(value))
+            cells = (name, r.species.rarity, r.species.element, r.where, "● сегодня" if r.today else "",
+                     r.owned or "нет")
+            for col, value in enumerate(cells, 1):
+                item = QTableWidgetItem(value)
+                if col == 1:
+                    item.setFont(QFont("Segoe UI", 10, QFont.DemiBold))
+                    item.setToolTip(" → ".join(r.species.names))
+                    icon = self._icon(r.species.names[0])
+                    if icon is not None:
+                        item.setIcon(icon)
+                elif col == 2:
+                    item.setForeground(QColor(theme.RARITY_COLORS.get(r.species.rarity, theme.MUTED)))
+                elif col == 3:
+                    item.setForeground(QColor(theme.element_color(r.species.element)))
+                elif col == 5:
+                    item.setForeground(QColor(theme.GREEN))
+                elif col == 6:
+                    item.setForeground(QColor(theme.rank_color(r.owned) if r.owned not in ("", "есть") else
+                                              (theme.MUTED if not r.owned else theme.TEXT)))
+                self.hunt_table.setItem(i, col, item)
         self._hunt_filling = False
         self._hunt_summary()
 
@@ -367,7 +523,7 @@ class MainWindow(QMainWindow):
         for name in targets:
             spots = [str(i + 1) for i, s in enumerate(self.teaching.spots) if name in s.species_here()]
             lines.append(f"<b>{name}</b>: " + (f"точка {', '.join(spots)}" if spots else "точка пока неизвестна"))
-        self.hunt_summary.setText("Цели:<br>" + "<br>".join(lines))
+        self.hunt_summary.setText("<br>".join(lines))
 
     def _hunt_item_changed(self, item):
         if self._hunt_filling or item.column() != 0:
@@ -417,8 +573,11 @@ class MainWindow(QMainWindow):
 
     def _teach_tab(self) -> QWidget:
         w = QWidget()
+        w.setObjectName("page")
         v = QVBoxLayout(w)
-        help_text = QLabel(
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(12)
+        help_text = _hint(
             "Как обучать: выберите строку, нажмите «Снять», переключитесь в игру, где этот элемент виден.\n"
             "• Кнопка — наведите мышь на её центр и нажмите F4.\n"
             "• Область (текст для чтения) — F4 в левом верхнем углу, затем F4 в правом нижнем.\n"
@@ -426,32 +585,37 @@ class MainWindow(QMainWindow):
         help_text.setWordWrap(True)
         v.addWidget(help_text)
         self.capture_hint = QLabel("")
-        self.capture_hint.setStyleSheet("color:#d97706;font-weight:bold")
+        self.capture_hint.setObjectName("warn")
         v.addWidget(self.capture_hint)
 
         self.table = QTableWidget(len(ELEMENTS), 4)
-        self.table.setHorizontalHeaderLabels(["Элемент", "Тип", "", "Снимок"])
+        self.table.setHorizontalHeaderLabels(["Элемент", "Тип", "Нужно", "Снимок"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.table.verticalHeader().setDefaultSectionSize(48)
+        self.table.verticalHeader().setDefaultSectionSize(52)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
         for row, e in enumerate(ELEMENTS):
             item = QTableWidgetItem(e.title)
             item.setToolTip(e.hint)
             self.table.setItem(row, 0, item)
             self.table.setItem(row, 1, QTableWidgetItem("кнопка" if e.kind == BUTTON else "область"))
-            self.table.setItem(row, 2, QTableWidgetItem("обязательно" if e.required else ""))
+            required = QTableWidgetItem("обязательно" if e.required else "по желанию")
+            required.setForeground(QColor(theme.ACCENT if e.required else theme.MUTED))
+            self.table.setItem(row, 2, required)
         v.addWidget(self.table, 1)
-        self.hint = QLabel("")
+        self.hint = _hint("")
         self.hint.setWordWrap(True)
         v.addWidget(self.hint)
         self.table.itemSelectionChanged.connect(
             lambda: self.hint.setText(ELEMENTS[self.table.currentRow()].hint if self.table.currentRow() >= 0 else ""))
 
         row = QHBoxLayout()
-        snap_btn = QPushButton("Снять (F4)")
+        snap_btn = _primary("Снять (F4)")
         snap_btn.clicked.connect(self._arm_element)
         clear_btn = QPushButton("Сбросить")
         clear_btn.clicked.connect(self._clear_element)
@@ -550,7 +714,10 @@ class MainWindow(QMainWindow):
 
     def _routes_tab(self) -> QWidget:
         w = QWidget()
+        w.setObjectName("page")
         v = QVBoxLayout(w)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(12)
         spots_box = QGroupBox("Точки поиска на текущей локации (бот обходит их по кругу)")
         sv = QVBoxLayout(spots_box)
         self.spot_list = QListWidget()
@@ -558,14 +725,14 @@ class MainWindow(QMainWindow):
         self.spot_list.setIconSize(QPixmap(110, 110).size())
         self.spot_list.setMaximumHeight(170)
         sv.addWidget(self.spot_list)
-        self.spot_hint = QLabel(
+        self.spot_hint = _hint(
             "Лучше всего: «Снимок локации и разметка» — через 3 с программа снимет экран игры, и вы кликами отметите "
             "точки прямо на снимке. По снимку бот видит, куда уехала камера, и находит точки, даже когда их загородил "
             "персонаж. Перед снимком отведите персонажа от точек.")
         self.spot_hint.setWordWrap(True)
         sv.addWidget(self.spot_hint)
         row = QHBoxLayout()
-        mark = QPushButton("Снимок локации и разметка (рекомендуется)")
+        mark = _primary("Снимок локации и разметка (рекомендуется)")
         mark.clicked.connect(self._start_location_shot)
         sv.addWidget(mark)
         add = QPushButton("Добавить точки (F4)")
@@ -584,7 +751,7 @@ class MainWindow(QMainWindow):
 
         routes_box = QGroupBox("Маршруты")
         rv = QVBoxLayout(routes_box)
-        explain = QLabel(
+        explain = _hint(
             "Запись: выберите маршрут, нажмите «Записать», в игре наводите мышь на то, что нужно нажать, и жмите F4 — "
             "бот запомнит это место и сам нажмёт. Лечение: Return Home → здание Healing → Miscrit Healer → первая опция → "
             "Okay → красная стрелка → путь обратно на локацию. Тренировка: Train → кнопка тренировки → Okay/Continue → закрыть.\n"
@@ -602,7 +769,7 @@ class MainWindow(QMainWindow):
         self.route_hint = QLabel("")
         rv.addWidget(self.route_hint)
         row = QHBoxLayout()
-        rec = QPushButton("Записать (F4)")
+        rec = _primary("Записать (F4)")
         rec.clicked.connect(self._record_route)
         stop = QPushButton("Закончить запись")
         stop.clicked.connect(self._finish_capture)
@@ -732,34 +899,50 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         w = QWidget()
-        form = QFormLayout(w)
+        w.setObjectName("page")
+        v = QVBoxLayout(w)
+        v.setContentsMargins(20, 16, 20, 16)
+        v.setSpacing(14)
         self.setting_widgets = {}
-        for f in fields(Settings):
-            value = getattr(self.settings, f.name)
-            if isinstance(value, list):
-                continue  # цели охоты задаются на вкладке «Охота»
-            if isinstance(value, bool):
-                widget = QCheckBox()
-                widget.setChecked(value)
-            elif isinstance(value, int):
-                widget = QSpinBox()
-                widget.setRange(0, 100000)
-                widget.setValue(value)
-            elif isinstance(value, float):
-                widget = QDoubleSpinBox()
-                widget.setRange(0, 1000)
-                widget.setDecimals(2)
-                widget.setSingleStep(0.05)
-                widget.setValue(value)
-            else:
-                widget = QLineEdit(str(value))
-            self.setting_widgets[f.name] = widget
-            form.addRow(SETTING_LABELS.get(f.name, f.name), widget)
-        save = QPushButton("Сохранить")
+        values = {f.name: getattr(self.settings, f.name) for f in fields(Settings)}
+        for title, names in SETTING_GROUPS:
+            box = QGroupBox(title)
+            form = QFormLayout(box)
+            form.setHorizontalSpacing(24)
+            form.setVerticalSpacing(10)
+            form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            for name in names:
+                value = values[name]
+                if isinstance(value, bool):
+                    widget = QCheckBox()
+                    widget.setChecked(value)
+                elif isinstance(value, int):
+                    widget = QSpinBox()
+                    widget.setRange(0, 100000)
+                    widget.setValue(value)
+                elif isinstance(value, float):
+                    widget = QDoubleSpinBox()
+                    widget.setRange(0, 1000)
+                    widget.setDecimals(2)
+                    widget.setSingleStep(0.05)
+                    widget.setValue(value)
+                else:
+                    widget = QLineEdit(str(value))
+                if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                    widget.setButtonSymbols(QSpinBox.NoButtons)
+                    widget.setFixedWidth(120)
+                    widget.setAlignment(Qt.AlignRight)
+                self.setting_widgets[name] = widget
+                form.addRow(SETTING_LABELS.get(name, name), widget)
+            v.addWidget(box)
+        row = QHBoxLayout()
+        row.addWidget(_hint("Изменения применяются при следующем старте бота."), 1)
+        save = _primary("Сохранить")
+        save.setMinimumWidth(180)
         save.clicked.connect(self._save_settings)
-        form.addRow(save)
-        note = QLabel("Изменения применяются при следующем старте бота.")
-        form.addRow(note)
+        row.addWidget(save)
+        v.addLayout(row)
+        v.addStretch(1)
         scroll.setWidget(w)
         return scroll
 
@@ -802,6 +985,8 @@ class MainWindow(QMainWindow):
                 label.setText("✔")
             else:
                 label.setText("— не снято —")
+                label.setObjectName("hint")
+            label.setContentsMargins(8, 0, 0, 0)
             self.table.setCellWidget(row, 3, label)
         self.spot_list.clear()
         for i, spot in enumerate(self.teaching.spots, 1):
