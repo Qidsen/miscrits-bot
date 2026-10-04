@@ -15,7 +15,9 @@ from .combat import DamageModel, Move
 from .formula import base_damage, fit
 
 FIELDS = ("time", "attacker", "attacker_level", "ability", "ap", "times", "atk_element", "enemy", "enemy_element",
-          "enemy_level", "enemy_max_hp", "damage", "enemy_rank")
+          "enemy_level", "enemy_max_hp", "damage", "enemy_rank", "kill")
+# Поимка не доверяет неточным прогнозам: худший случай × столько, смотря откуда прогноз
+CAPTURE_DOUBT = {"журнал": 1.0, "формула": 1.5, "общая": 2.0}
 LEVEL_STEPS = (3, 8)  # сначала противники ±3 уровня, потом ±8
 MIN_SIMILAR = 2
 TRUST_SIMILAR = 3  # столько похожих ударов — и журнал важнее формулы
@@ -38,6 +40,7 @@ class Hit:
     enemy_rank: str | None
     enemy_max_hp: int
     damage: int
+    kill: bool = False  # удар добил: известно только «урон не меньше damage»
 
     @property
     def power(self) -> int:
@@ -91,15 +94,16 @@ class HitBook:
             return None
         return Hit(row.get("attacker", ""), _int(row.get("attacker_level")), row.get("ability", ""), ap, times,
                    row.get("atk_element", ""), row.get("enemy", ""), row.get("enemy_element", ""),
-                   _int(row.get("enemy_level")), row.get("enemy_rank") or None, max_hp, damage)
+                   _int(row.get("enemy_level")), row.get("enemy_rank") or None, max_hp, damage,
+                   (row.get("kill") or "") in ("1", "True", "true"))
 
     def record(self, attacker, attacker_level, move: Move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
-               damage, enemy_rank=None) -> None:
+               damage, enemy_rank=None, kill=False) -> None:
         """Записать удар (и промах — damage 0) в журнал; в прогноз идут только попадания."""
         row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "attacker": attacker, "attacker_level": attacker_level or "",
                "ability": move.name, "ap": move.ap, "times": move.times, "atk_element": move.element,
                "enemy": enemy_name, "enemy_element": enemy_element, "enemy_level": enemy_level or "",
-               "enemy_max_hp": enemy_max_hp, "damage": damage, "enemy_rank": enemy_rank or ""}
+               "enemy_max_hp": enemy_max_hp, "damage": damage, "enemy_rank": enemy_rank or "", "kill": "1" if kill else ""}
         if self.path:
             new = not os.path.exists(self.path)
             with open(self.path, "a", encoding="utf-8", newline="") as f:
@@ -111,13 +115,19 @@ class HitBook:
         if hit is not None:
             self.hits.append(hit)
             self._calibrated = False
-        self.fallback.observe(attacker, move, enemy_element, damage, enemy_max_hp)
+        if not kill:
+            self.fallback.observe(attacker, move, enemy_element, damage, enemy_max_hp)
 
     # ---- похожие удары ----
 
     def _same(self, attacker, move, target_element):
-        return [h for h in self.hits if h.damage > 0 and h.attacker == attacker
-                and h.atk_element == move.element and h.enemy_element == target_element]
+        """Удары по цели этой стихии: сначала этой же атакой; если ею ещё не били — атаками той же стихии
+        с тем же числом ударов (Cinders 1×7 и The Big Finale 4×7 обе Fire, но бьют по-разному)."""
+        base = [h for h in self.hits if h.damage > 0 and h.attacker == attacker and h.enemy_element == target_element]
+        exact = [h for h in base if h.ability == move.name]
+        if exact:
+            return exact
+        return [h for h in base if h.atk_element == move.element and (h.times > 1) == (move.times > 1)]
 
     def _similar(self, attacker, move, target_element):
         same = self._same(attacker, move, target_element)
@@ -144,6 +154,8 @@ class HitBook:
             rows = []
             if self.stats is not None:
                 for h in self.hits:
+                    if h.kill:
+                        continue  # «не меньше» — для подгонки не годится
                     pair = self.stats(h.attacker, h.attacker_level, h.enemy, h.enemy_level, h.enemy_rank)
                     if pair is not None:
                         rows.append((base_damage(h.move, *pair), h.move, h.enemy_element, h.damage))
@@ -176,12 +188,17 @@ class HitBook:
         similar = self._similar(attacker, move, target_element) if max_hp else []
         by_formula = None if len(similar) >= TRUST_SIMILAR else self.formula(attacker, move, target_element)
         if similar and by_formula is None:
-            shares = [h.share for h in similar]
-            mean, top = sum(shares) / len(shares), max(shares)
+            shares = [h.share for h in similar if not h.kill] or [h.share for h in similar]
+            mean, top = sum(shares) / len(shares), max(h.share for h in similar)  # добившие — только в максимум
             margin = (1.3 if move.times > 1 else 1.15) if len(shares) >= 3 else 1.5
             return mean * move.power * max_hp, top * margin * move.power * max_hp, "журнал"
         if by_formula is not None:
-            return (*by_formula, "формула")
+            expected, worst = by_formula
+            # удары, которые добивали, — «урон не меньше»: худший случай не ниже того, что уже бывало
+            kills = [h.share for h in self._same(attacker, move, target_element) if h.kill]
+            if kills and max_hp:
+                worst = max(worst, max(kills) * move.power * max_hp * 1.2)
+            return expected, worst, "формула"
         return (*self.fallback.estimate(attacker, move, target_element, max_hp), "общая")
 
     def observed(self, attacker, move, target_element) -> int:
@@ -193,3 +210,18 @@ class HitBook:
 
     def to_json(self):
         return self.fallback.to_json()
+
+
+class CaptureView:
+    """Тот же журнал, но для поимки: худший случай с запасом за неточность прогноза
+    (формула ×1.5, общая модель ×2) — лучше лишний раз поймать раньше, чем добить."""
+
+    def __init__(self, book: HitBook):
+        self.book = book
+
+    def estimate(self, attacker, move, target_element, max_hp=None):
+        expected, worst, source = self.book.estimate_with_source(attacker, move, target_element, max_hp)
+        return expected, worst * CAPTURE_DOUBT.get(source, 2.0)
+
+    def observed(self, attacker, move, target_element) -> int:
+        return self.book.observed(attacker, move, target_element)

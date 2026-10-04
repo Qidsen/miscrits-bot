@@ -15,7 +15,7 @@ from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
 from .brain.formula import my_stats, rank_roll, stats_at
-from .brain.hits import HitBook
+from .brain.hits import CaptureView, HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
@@ -33,6 +33,7 @@ MISS_RETRIES = 2
 EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
+LIGHT_BUTTONS_AFTER = 4.0  # с: столько ждём обученный «Мой ход», прежде чем верить светлым кнопкам
 EXPLORE_SWITCH_CHANCE = 0.3  # доля боёв «на убой», в которых пробуем другого крита команды
 PORTRAIT_MATCH = 0.8  # насколько портрет в столбике должен совпасть с запомненным
 SWITCH_FAR = 0.15  # смена ради поимки — только если до порога HP ещё больше 15% макс. HP цели
@@ -92,7 +93,8 @@ class Bot:
         self._all_caught_said = False
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
         self._switch_broken = False
-        self._train_seen = None  # что сказала сводка последнего боя про тренировку  # (локация, имя, x, y) -> time.monotonic() клика
+        self._train_seen = None  # что сказала сводка последнего боя про тренировку
+        self._last_max_hp = None  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
         self._catalog_fn = catalog_fn
         self._player_fn = player_fn
@@ -551,6 +553,8 @@ class Bot:
                 captured = True
                 break
             if turn == "battle_won":
+                if decision is not None and decision.action == CAPTURE and last is not None:
+                    self._killed_while_catching(enemy, rank, last)
                 self._train_seen = self._summary_says_train()
                 break
             self._sleep(0.4)  # анимации панели HP
@@ -577,7 +581,11 @@ class Bot:
                 decision = decide(enemy.id if enemy else None, rank, enemy.rarity if enemy else "", self._collection())
                 who = f"{enemy.names[0]} ({enemy.rarity}) {rank or '?'}" if enemy else "?"
                 self._say(f"бой: {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} — {decision.reason}")
+                self._emit("battle_log", f"──── {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} "
+                                         f"({decision.reason}) ────")
             hp = self.eyes.read_hp("enemy_hp")
+            if hp:
+                self._last_max_hp = hp[1]
             mine = self.eyes.read_hp("my_hp")
             if mine:
                 my_ratio = mine[0] / mine[1]
@@ -598,9 +606,11 @@ class Bot:
                 self._portraits[my_name] = portrait  # теперь знаем, чей это портрет
                 self._say(f"сменил крита: теперь {my_name}")
             target_element = enemy.element if enemy else ""
-            if last and hp and last[0] == my_name:
+            if last and hp and last[0] == my_name and hp[0] <= last[2]:
+                # один наш удар за ход: урон = HP цели до него минус HP сейчас. Если HP выросло (противник
+                # подлечился), удар не записываем — разница была бы неправдой
                 self.hits.record(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
-                                 target_element, self.hits.level, hp[1], max(last[2] - hp[0], 0), rank)
+                                 target_element, self.hits.level, hp[1], last[2] - hp[0], rank)
             if me is None:
                 raise Stuck("не распознал своего крита")
             moves, extras = self._known_moves(my_name, me)
@@ -614,7 +624,7 @@ class Bot:
                     plat = self.eyes.sees("plat_capture")
                 chance = self.eyes.read_percent("capture_chance") if self.eyes.knows("capture_chance") else None
                 precious = bool(enemy) and enemy.rarity in PLAT_RARITIES
-                action = choose_capture(moves, self.hits, my_name, target_element,
+                action = choose_capture(moves, CaptureView(self.hits), my_name, target_element,
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
                                         self.settings.capture_min_chance, (can_capture or plat) is not None,
                                         precious=precious, floor=self.settings.capture_hp_floor)
@@ -709,8 +719,9 @@ class Bot:
             self.eyes.look()
             if self.eyes.sees("battle") is None:
                 return None
-            # «Мой ход» обучен на конкретной кнопке — после смены крита она другая; свой ход узнаём по жёлтым кнопкам
-            if self.eyes.abilities_active():
+            # «Мой ход» обучен на кнопке конкретного крита — после смены она другая. Тогда узнаём ход по светлым
+            # кнопкам, но только как запасной признак: они светлые и во время анимаций, и раньше времени ходить нельзя
+            if time.monotonic() - start > LIGHT_BUTTONS_AFTER and self.eyes.abilities_active():
                 return "my_turn"
             if self._page != 0 and time.monotonic() - flipped_at > 2:
                 arrow = self.eyes.sees("ability_prev")
@@ -780,7 +791,7 @@ class Bot:
             names = {n for page in self._pages[name] for n in page if n}
             moves = moves_from_catalog(species.abilities, names)
             current_level, self.hits.attacker_level = self.hits.attacker_level, None
-            action = choose_capture(moves, self.hits, name, target_element, hp[0], hp[1], None, 101, True,
+            action = choose_capture(moves, CaptureView(self.hits), name, target_element, hp[0], hp[1], None, 101, True,
                                     precious=precious, floor=self.settings.capture_hp_floor)
             if action.kind != ATTACK:
                 self.hits.attacker_level = current_level
@@ -800,6 +811,7 @@ class Bot:
             expected, worst, source = self.hits.estimate_with_source(my_name, m, target_element, hp[1] if hp else None)
             seen = self.hits.observed(my_name, m, target_element)
             if decision.action == CAPTURE and hp:
+                worst = CaptureView(self.hits).estimate(my_name, m, target_element, hp[1])[1]
                 worst_used = worst * (PRECIOUS_EXTRA if precious else 1)
                 ok = worst_used <= hp[0] - floor and (not precious or seen >= PRECIOUS_SEEN)
                 verdict = "безопасно" if ok else ("мало данных" if precious and seen < PRECIOUS_SEEN else "может добить")
@@ -824,12 +836,34 @@ class Bot:
                 text += f" — у цели {hp[0]} HP, останется не меньше {floor} → бью"
             elif why:
                 text += f" — {why}"
-        self._say(text)
+        log.info(text)
+        self._emit("battle_log", text)
         self._emit("battle", {
             "enemy": enemy.names[0] if enemy else "?", "rarity": enemy.rarity if enemy else "", "rank": rank,
             "level": self.hits.level, "hp": hp, "me": my_name, "my_hp": mine, "mode": decision.action,
             "reason": decision.reason, "moves": rows, "action": text, "floor": floor,
         })
+
+    def _killed_while_catching(self, enemy, rank, last):
+        """Цель умерла от удара, который должен был её только подвести: записываем как «урон не меньше остатка HP»,
+        чтобы худший случай для таких ударов вырос, и сохраняем инцидент со скриншотом."""
+        attacker, move, hp_before = last
+        name = enemy.names[0] if enemy else "?"
+        target_element = enemy.element if enemy else ""
+        forecast = self.hits.estimate_with_source(attacker, move, target_element, self._last_max_hp)
+        shot = self._screenshot("killed-while-catching")
+        self._emit("battle_log", "⚠ добил при поимке — см. «События»")
+        self._say(f"⚠ добил при поимке: {name} {rank or ''} — {move.name} при {hp_before} HP "
+                  f"(прогноз: ожидаемо {forecast[0]:.0f}, худший {forecast[1]:.0f}, {forecast[2]}). Скриншот: {shot}")
+        self.hits.record(attacker, self.hits.attacker_level, move, name, target_element, self.hits.level,
+                         self._last_max_hp, hp_before, rank, kill=True)
+        path = self._learn_path.with_name("incidents.csv")
+        new = not path.exists()
+        with open(path, "a", encoding="utf-8", newline="") as f:
+            if new:
+                f.write("time,enemy,rank,level,attacker,ability,hp_before,expected,worst,source\n")
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')},{name},{rank or ''},{self.hits.level or ''},{attacker},"
+                    f"{move.name},{hp_before},{forecast[0]:.0f},{forecast[1]:.0f},{forecast[2]}\n")
 
     def _stats_pair(self, attacker, attacker_level, enemy, enemy_level, enemy_rank):
         """(статы моего крита, статы противника) для формулы урона или None.

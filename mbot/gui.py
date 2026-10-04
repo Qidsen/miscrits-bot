@@ -281,12 +281,21 @@ class MainWindow(QMainWindow):
         self.checks.setWordWrap(True)
         v.addWidget(self.checks)
 
-        events_title = QLabel("События")
-        events_title.setObjectName("sectionTitle")
-        v.addWidget(events_title)
-        self.events = QListWidget()
-        self.events.setAlternatingRowColors(True)
-        v.addWidget(self.events, 1)
+        lists = QHBoxLayout()
+        lists.setSpacing(12)
+        for attr, title in (("battle_events", "Ход боя — что видит и почему так ходит"),
+                            ("events", "События — поиск, поимки, тренировка, ошибки")):
+            column = QVBoxLayout()
+            label = QLabel(title)
+            label.setObjectName("sectionTitle")
+            column.addWidget(label)
+            widget = QListWidget()
+            widget.setAlternatingRowColors(True)
+            widget.setWordWrap(True)
+            setattr(self, attr, widget)
+            column.addWidget(widget, 1)
+            lists.addLayout(column, 1)
+        v.addLayout(lists, 1)
         return w
 
     def _battle_card(self) -> QWidget:
@@ -442,6 +451,15 @@ class MainWindow(QMainWindow):
             self._show_locmap(*data)
         elif kind == "battle":
             self._show_battle(data)
+        elif kind == "battle_log":
+            item = QListWidgetItem(f"{time.strftime('%H:%M:%S')}   {data}")
+            if data.startswith("⚠"):
+                item.setForeground(QColor(theme.RED))
+            elif data.startswith("ловлю"):
+                item.setForeground(QColor(theme.ACCENT))
+            self.battle_events.insertItem(0, item)
+            while self.battle_events.count() > 300:
+                self.battle_events.takeItem(self.battle_events.count() - 1)
         elif kind == "battle_end":
             self.battle_title.setText("⚔  Сейчас не в бою")
         elif kind == "stats":
