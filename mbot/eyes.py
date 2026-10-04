@@ -1,10 +1,14 @@
 """Что бот видит: обученные элементы на текущем скриншоте и прочитанные с них значения."""
 
+import re
+
 import cv2
 import numpy as np
 
 from .screen import best_name, crop, find, find_scored, grab, parse_hp, parse_percent
 
+# уровень на панели крита — относительно обученной области имени (проверено на 2560×1440: 15 и 35)
+LEVEL_DX, LEVEL_DY, LEVEL_W, LEVEL_H = 236, -14, 44, 34
 SPOT_THRESHOLD = 0.7  # точки поиска — куски пейзажа, им можно чуть меньше точности
 SPOT_MARGIN = 400  # камера ходит за персонажем, поэтому точка может сдвинуться заметно
 PIECE_THRESHOLD = 0.8
@@ -229,6 +233,22 @@ class Eyes:
         if rect is None or self.ranks is None:
             return None
         return self.ranks.classify(crop(self.image, rect))
+
+    def read_level(self, who: str):
+        """Уровень крита ("enemy" или "my") — число в правом верхнем углу его панели, рядом с именем."""
+        rect = self.region(f"{who}_name")
+        if rect is None or self.ocr is None or self.image is None:
+            return None
+        x, y, w, h = rect
+        box = (x + LEVEL_DX, y + LEVEL_DY, LEVEL_W, LEVEL_H)
+
+        def parse(texts):
+            for text in texts:
+                m = re.search(r"\d{1,2}", text)
+                if m and 1 <= int(m.group()) <= 99:
+                    return int(m.group())
+            return None
+        return self.ocr.read(crop(self.image, box), parse, "0123456789")
 
     def read_name(self, element_id: str, names):
         return self._read(element_id, lambda texts: best_name(texts, names))

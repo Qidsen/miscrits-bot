@@ -51,6 +51,9 @@ class FakeEyes:
     def read_rank(self, element_id):
         return "B"
 
+    def read_level(self, who):
+        return 12 if who == "enemy" else 35
+
     def read_name(self, element_id, names):
         if element_id == "enemy_name":
             return self.enemy

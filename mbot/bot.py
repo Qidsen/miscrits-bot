@@ -13,6 +13,7 @@ import numpy as np
 
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import ATTACK, STALL, DamageModel, choose_capture, choose_kill, moves_from_catalog
+from .brain.hits import HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
@@ -94,6 +95,7 @@ class Bot:
         self._paused = threading.Event()
         self.stats = Stats()
         self.model = self._load_model()
+        self.hits = HitBook(learn_path.with_name("hits.csv"), self.model)  # журнал ударов + прогноз по похожим
         self._pages = {}  # имя моего крита -> [[имена способностей по слотам] по страницам]
         self._page = 0
         self._spot = 0
@@ -555,6 +557,8 @@ class Bot:
                 if enemy is None:
                     shot = self._screenshot("enemy-unknown")
                     self._say(f"противник не распознан — бью (скриншот: {shot})")
+                enemy_level = self.eyes.read_level("enemy")
+                self.hits.level = enemy_level
                 decision = decide(enemy.id if enemy else None, rank, enemy.rarity if enemy else "", self._collection())
                 who = f"{enemy.names[0]} ({enemy.rarity}) {rank or '?'}" if enemy else "?"
                 self._say(f"бой: {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} — {decision.reason}")
@@ -566,7 +570,8 @@ class Bot:
             me = by_name.get(my_name)
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name:
-                self.model.observe(last[0], last[1], target_element, last[2] - hp[0], hp[1])
+                self.hits.record(last[0], self.eyes.read_level("my"), last[1], enemy.names[0] if enemy else "?",
+                                 target_element, self.hits.level, hp[1], max(last[2] - hp[0], 0))
             if me is None:
                 raise Stuck("не распознал своего крита")
             moves, extras = self._known_moves(my_name, me)
@@ -580,7 +585,7 @@ class Bot:
                     plat = self.eyes.sees("plat_capture")
                 chance = self.eyes.read_percent("capture_chance") if self.eyes.knows("capture_chance") else None
                 precious = bool(enemy) and enemy.rarity in PLAT_RARITIES
-                action = choose_capture(moves, self.model, my_name, target_element,
+                action = choose_capture(moves, self.hits, my_name, target_element,
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
                                         self.settings.capture_min_chance, (can_capture or plat) is not None,
                                         precious=precious, floor=self.settings.capture_hp_floor)
@@ -610,7 +615,7 @@ class Bot:
             else:
                 move = self._first_ability(my_name, moves) if self.settings.kill_with_first else None
                 if move is None:
-                    move = choose_kill(moves, self.model, my_name, target_element)
+                    move = choose_kill(moves, self.hits, my_name, target_element)
             self._use(move.name, my_name)
             last = (my_name, move, hp[0]) if hp else None
             self._sleep(1.0)
