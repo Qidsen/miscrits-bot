@@ -103,6 +103,9 @@ class Teaching:
     elements: dict = field(default_factory=dict)  # id -> Snapshot
     spots: list = field(default_factory=list)  # [Snapshot]
     routes: dict = field(default_factory=dict)  # имя -> [Step]
+    # Полный снимок локации, на котором отмечены точки: по нему бот считает сдвиг камеры.
+    # Картинка большая, поэтому хранится отдельным PNG рядом с JSON.
+    location: Snapshot | None = None
 
     def missing_required(self) -> list:
         missing = [e.title for e in ELEMENTS if e.required and e.id not in self.elements]
@@ -115,6 +118,7 @@ class Teaching:
             "elements": {k: v.to_json() for k, v in self.elements.items()},
             "spots": [s.to_json() for s in self.spots],
             "routes": {k: [s.to_json() for s in v] for k, v in self.routes.items()},
+            "location_rect": list(self.location.rect) if self.location else None,
         }
 
     @classmethod
@@ -126,15 +130,37 @@ class Teaching:
         )
 
 
+def _location_path(path) -> str:
+    root, _ = os.path.splitext(str(path))
+    return root + "_location.png"
+
+
 def load_teaching(path) -> Teaching:
     try:
         with open(path, encoding="utf-8") as f:
-            return Teaching.from_json(json.load(f))
+            data = json.load(f)
     except FileNotFoundError:
         return Teaching()
+    teaching = Teaching.from_json(data)
+    rect = data.get("location_rect")
+    if rect:
+        try:
+            with open(_location_path(path), "rb") as f:
+                image = cv2.imdecode(np.frombuffer(f.read(), np.uint8), cv2.IMREAD_COLOR)
+            if image is not None:
+                teaching.location = Snapshot(tuple(int(v) for v in rect), image)
+        except OSError:
+            pass
+    return teaching
 
 
-def save_teaching(path, teaching: Teaching) -> None:
+def save_teaching(path, teaching: Teaching, with_location: bool = False) -> None:
+    """with_location — переписать и PNG снимка локации (он большой, поэтому только когда он поменялся)."""
+    if with_location and teaching.location is not None:
+        ok, buf = cv2.imencode(".png", teaching.location.image)
+        if ok:
+            with open(_location_path(path), "wb") as f:
+                f.write(buf.tobytes())
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(teaching.to_json(), f)

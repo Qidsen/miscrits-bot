@@ -22,7 +22,8 @@ from miscrits_hud.config import game_data_dir
 from . import mouse
 from .bot import Bot
 from .eyes import Eyes
-from .screen import Ocr, around, crop, grab, to_image, to_screen
+from .location_dialog import LocationDialog, spots_from_points
+from .screen import Ocr, around, crop, grab, monitors_on_image, to_image, to_screen
 from .settings import Settings, save_settings
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
 
@@ -384,7 +385,7 @@ class MainWindow(QMainWindow):
                 lines.append(f"{e.title}: {eyes.read_name(e.id, ability_names)}")
             else:
                 lines.append(f"{e.title}: {eyes.read_name(e.id, all_names)}")
-        spots = sum(1 for s in self.teaching.spots if eyes.sees_snap(s, threshold=0.7))
+        spots = sum(1 for s in self.teaching.spots if eyes.locate_spot(s))
         lines.append(f"Точек поиска видно: {spots}/{len(self.teaching.spots)}")
         self.test_output.setPlainText("\n".join(lines))
 
@@ -400,10 +401,16 @@ class MainWindow(QMainWindow):
         self.spot_list.setIconSize(QPixmap(110, 110).size())
         self.spot_list.setMaximumHeight(170)
         sv.addWidget(self.spot_list)
-        self.spot_hint = QLabel("Нажмите «Добавить», затем в игре наводите мышь на каждую точку поиска и жмите F4.")
+        self.spot_hint = QLabel(
+            "Лучше всего: «Снимок локации и разметка» — через 3 с программа снимет экран игры, и вы кликами отметите "
+            "точки прямо на снимке. По снимку бот видит, куда уехала камера, и находит точки, даже когда их загородил "
+            "персонаж. Перед снимком отведите персонажа от точек.")
         self.spot_hint.setWordWrap(True)
         sv.addWidget(self.spot_hint)
         row = QHBoxLayout()
+        mark = QPushButton("Снимок локации и разметка (рекомендуется)")
+        mark.clicked.connect(self._start_location_shot)
+        sv.addWidget(mark)
         add = QPushButton("Добавить точки (F4)")
         add.clicked.connect(lambda: (setattr(self, "capture_mode", ("spot",)),
                                      self.spot_hint.setText("Жду F4 на точках поиска…")))
@@ -450,8 +457,35 @@ class MainWindow(QMainWindow):
             row.addWidget(b)
         rv.addLayout(row)
         v.addWidget(routes_box, 1)
-        self._teach_buttons_routes = [add, delete, rec, optional, remove, wipe]
+        self._teach_buttons_routes = [mark, add, delete, rec, optional, remove, wipe]
         return w
+
+    def _start_location_shot(self):
+        self.spot_hint.setText("Снимок через 3 с — переключитесь в игру (мышь оставьте на мониторе с игрой)…")
+        QTimer.singleShot(3000, self._location_shot)
+
+    def _location_shot(self):
+        image = grab()
+        cursor = to_image(mouse.position())
+        # снимаем монитор, на котором мышь, — там игра
+        monitor = next((m for m in monitors_on_image() if m[0] <= cursor[0] < m[0] + m[2] and m[1] <= cursor[1] < m[1] + m[3]),
+                       (0, 0, image.shape[1], image.shape[0]))
+        shot = crop(image, monitor).copy()
+        old = self.teaching.location
+        points = []
+        if old is not None and old.rect == monitor:
+            points = [(s.rect[0] - monitor[0] + s.rect[2] // 2, s.rect[1] - monitor[1] + s.rect[3] // 2)
+                      for s in self.teaching.spots]
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        dialog = LocationDialog(self, shot, points)
+        if dialog.exec():
+            self.teaching.location = Snapshot(monitor, shot)
+            self.teaching.spots = spots_from_points(shot, monitor[:2], dialog.points, self.settings.button_size)
+            save_teaching(self.teaching_path, self.teaching, with_location=True)
+            self._refresh_all()
+        self.spot_hint.setText(f"Точек: {len(self.teaching.spots)}.")
 
     def _route_key(self):
         return self.route_combo.currentData()

@@ -32,6 +32,12 @@ def grab() -> np.ndarray:
     return np.asarray(shot)[:, :, :3].copy()
 
 
+def monitors_on_image() -> list:
+    """Прямоугольники мониторов (x, y, w, h) в координатах скриншота рабочего стола."""
+    ox, oy = origin()
+    return [(m["left"] - ox, m["top"] - oy, m["width"], m["height"]) for m in _mss().monitors[1:]]
+
+
 def to_image(point) -> tuple:
     """Позиция курсора → координаты на скриншоте."""
     ox, oy = origin()
@@ -58,8 +64,8 @@ def around(point, size: int, image_shape) -> tuple:
     return x, y, min(size, width), min(size, height)
 
 
-def find(image: np.ndarray, template: np.ndarray, threshold: float, near=None):
-    """Прямоугольник лучшего совпадения шаблона (x, y, w, h) или None.
+def find_scored(image: np.ndarray, template: np.ndarray, near=None) -> tuple:
+    """(прямоугольник лучшего совпадения (x, y, w, h), оценка 0..1); прямоугольник None, если искать негде.
     near — исходный rect шаблона: ищем только в его окрестности."""
     ox = oy = 0
     area = image
@@ -69,12 +75,16 @@ def find(image: np.ndarray, template: np.ndarray, threshold: float, near=None):
         area = image[oy:y + h + SEARCH_MARGIN, ox:x + w + SEARCH_MARGIN]
     th, tw = template.shape[:2]
     if area.shape[0] < th or area.shape[1] < tw:
-        return None
+        return None, 0.0
     result = cv2.matchTemplate(area, template, cv2.TM_CCOEFF_NORMED)
     _, score, _, (mx, my) = cv2.minMaxLoc(result)
-    if score < threshold:
-        return None
-    return ox + mx, oy + my, tw, th
+    return (ox + mx, oy + my, tw, th), float(score)
+
+
+def find(image: np.ndarray, template: np.ndarray, threshold: float, near=None):
+    """Прямоугольник лучшего совпадения шаблона или None, если оно хуже порога."""
+    rect, score = find_scored(image, template, near)
+    return rect if rect is not None and score >= threshold else None
 
 
 class Ocr:

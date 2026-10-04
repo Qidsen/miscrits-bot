@@ -275,7 +275,7 @@ class Bot:
         self._state("ищу мискрита")
         self.eyes.look()
         for i in ready:
-            rect = self.eyes.sees_snap(spots[i], threshold=0.7)
+            rect = self.eyes.locate_spot(spots[i])
             if rect is None:
                 continue
             self._spot = i + 1
