@@ -44,7 +44,8 @@ ELEMENTS = (
     ElementDef("come_back_later", BUTTON, False, "Точка на кулдауне",
                "Необязательно: бот сам считает кулдаун точек. Надпись «Come back later!» нужна только для подстраховки."),
     ElementDef("train_ready", BUTTON, False, "Есть кого тренировать",
-               "Не нужно: бот сам замечает, что кнопка Train мигает. Оставлено для совместимости."),
+               "Полоса READY TO TRAIN в сводке после боя (экран с Continue): наведите мышь на надпись READY TO TRAIN "
+               "и нажмите F4. Если не обучено — бот смотрит, мигает ли кнопка Train."),
     ElementDef("popup_1", BUTTON, False, "Попап 1", "Любая кнопка, которую надо просто нажать (Okay, Continue…)."),
     ElementDef("popup_2", BUTTON, False, "Попап 2", "Ещё одна такая кнопка."),
     ElementDef("popup_3", BUTTON, False, "Попап 3", "Ещё одна такая кнопка."),

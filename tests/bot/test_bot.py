@@ -243,3 +243,19 @@ def test_train_nobody_ready_closes_without_pause(tmp_path):
     bot, clicks, steps = _train_bot(tmp_path, [False])
     assert bot._train() == 0
     assert steps == [0, 4] and not bot._paused.is_set()
+
+
+def test_battle_summary_decides_training(tmp_path):
+    import numpy as np
+
+    from mbot.storage import Step
+
+    eyes = FakeEyes([{"see": set()}])
+    eyes.teaching.routes["train"] = [Step(Snapshot((i, 0, 5, 5), np.zeros((5, 5, 3), np.uint8))) for i in range(5)]
+    bot, _ = make_bot(eyes, tmp_path)
+    bot._train_button_blinks = lambda snap: (_ for _ in ()).throw(AssertionError("не должен смотреть на кнопку"))
+    bot._train_seen = False
+    assert bot._should_train() is False
+    bot._train_seen = True
+    assert bot._should_train() is True
+    assert bot._train_seen is None  # ответ сводки используется один раз

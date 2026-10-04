@@ -36,6 +36,13 @@ def ready_label_of(row):
     return row[int(h * 0.6):int(h * 0.95), :]
 
 
+def summary_label_of(snap):
+    """Из снимка сводки боя — только полоса «READY TO TRAIN» (без портрета, уровня и «+N опыта»,
+    которые у каждого крита свои): средняя по высоте полоса снимка."""
+    h = snap.shape[0]
+    return snap[int(h * 0.42):int(h * 0.66), :]
+
+
 class Stopped(Exception):
     pass
 
@@ -69,7 +76,8 @@ class Bot:
         self._game_rect_fn = game_rect_fn
         self._locators = {}
         self._marker_used = {}
-        self._all_caught_said = False  # (локация, имя, x, y) -> time.monotonic() клика
+        self._all_caught_said = False
+        self._train_seen = None  # что сказала сводка последнего боя про тренировку  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
         self._catalog_fn = catalog_fn
         self._player_fn = player_fn
@@ -519,6 +527,7 @@ class Bot:
                 captured = True
                 break
             if turn == "battle_won":
+                self._train_seen = self._summary_says_train()
                 break
             self._sleep(0.4)  # анимации панели HP
             self.eyes.look()
@@ -691,6 +700,27 @@ class Bot:
             self.stats.heals += 1
         self._publish_stats()
 
+    def _summary_says_train(self):
+        """В сводке после боя (экран с Continue) у готового крита полоса «READY TO TRAIN».
+        True/False, или None, если элемент «Есть кого тренировать» не обучен."""
+        label = self._train_label()
+        if label is None:
+            return None
+        end = time.monotonic() + 1.5  # полоски опыта в сводке заполняются с анимацией
+        while True:
+            self.eyes.look()
+            if find(self.eyes.image, label, max(self.eyes.threshold, 0.8)) is not None:
+                return True
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.2)
+
+    def _train_label(self):
+        snap = self.eyes.teaching.elements.get("train_ready")
+        if snap is None or snap.image is None:
+            return None
+        return summary_label_of(snap.image)
+
     def _should_train(self) -> bool:
         steps = self.eyes.teaching.routes.get("train") or []
         if len(steps) < 3:
@@ -698,6 +728,9 @@ class Bot:
         every = self.settings.train_every
         if every and self.stats.battles % every == 0:
             return True
+        seen, self._train_seen = self._train_seen, None
+        if seen is not None:
+            return seen  # сводка боя уже сказала, есть ли кого тренировать
         return self._train_button_blinks(steps[0].snap)
 
     def _train_button_blinks(self, snap) -> bool:
