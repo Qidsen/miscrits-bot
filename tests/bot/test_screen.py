@@ -83,3 +83,23 @@ def test_outlined_white_text_from_game():
     assert best_name(read("ability_veto.png"), abilities) == "Veto"
     assert best_name(read("ability_hurricane.png"), abilities) == "Hurricane"
     assert best_name(read("ability_hyper_power.png"), abilities) == "Hyper Power"
+
+
+def test_names_and_second_rank_sample_from_game():
+    from pathlib import Path
+
+    import cv2
+
+    from mbot.screen import Ocr
+
+    ocr = Ocr(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if not ocr.available():
+        return
+    data = Path(__file__).parent / "data"
+    names = ["Flameling", "Dark Flameling", "Flaring", "Patriot", "Quirk", "Lavarilla"]
+    read = lambda name: ocr.read(cv2.imread(str(data / name)), lambda t: best_name(t, names))  # noqa: E731
+    assert read("name_flameling.png") == "Flameling"  # psm 7 на ней молчит — нужен перебор режимов
+    assert read("name_my_name.png") == "Patriot"
+    assert read("name_enemy_name.png") == "Quirk"
+    assert ocr.rank(cv2.imread(str(data / "rank_c_plus_2.png"))) == "C+"
+    assert ocr.rank(cv2.imread(str(data / "rank_c_plus.png"))) == "C+"

@@ -100,22 +100,32 @@ class Ocr:
         except Exception:
             return False
 
-    def text(self, image: np.ndarray, whitelist: str | None = None) -> list:
-        """Варианты распознанного текста: для светлого и для тёмного текста."""
+    def _variants(self, image: np.ndarray, whitelist: str | None):
+        """Распознанный текст разными способами, по одному. Tesseract капризен: одну и ту же надпись он
+        иногда читает только как «слово» (psm 8), а не как «строку» (psm 7), только по серому, а не по
+        чёрно-белому, поэтому пробуем по очереди, пока не получится что-то осмысленное."""
+        extra = f" -c tessedit_char_whitelist={whitelist}" if whitelist else ""
+        outlined = white_text(image)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        config = "--psm 7"
-        if whitelist:
-            config += f" -c tessedit_char_whitelist={whitelist}"
-        out = []
-        outlined = white_text(image)
-        if outlined is not None:
-            out.append(self._tess.image_to_string(outlined, config=config).strip())
-        for variant in (binary, 255 - binary):
-            padded = cv2.copyMakeBorder(variant, 20, 20, 20, 20, cv2.BORDER_REPLICATE)
-            out.append(self._tess.image_to_string(padded, config=config).strip())
-        return out
+        pictures = [outlined] if outlined is not None else []
+        pictures += [cv2.copyMakeBorder(v, 20, 20, 20, 20, cv2.BORDER_REPLICATE) for v in (gray, binary, 255 - binary)]
+        for psm in (7, 8):
+            for picture in pictures:
+                yield self._tess.image_to_string(picture, config=f"--psm {psm}{extra}").strip()
+
+    def read(self, image: np.ndarray, parse, whitelist: str | None = None):
+        """Первое значение parse([текст]), которое не None, перебирая способы распознавания."""
+        for text in self._variants(image, whitelist):
+            value = parse([text])
+            if value is not None:
+                return value
+        return None
+
+    def text(self, image: np.ndarray, whitelist: str | None = None) -> list:
+        """Все варианты распознанного текста (для проверки экрана и старых вызовов)."""
+        return list(self._variants(image, whitelist))
 
     def rank(self, image: np.ndarray) -> str | None:
         """Ранг со значка в бою: цветная буква с тёмной обводкой и отдельный «+»."""
@@ -123,6 +133,10 @@ class Ocr:
         if parts is None:
             return parse_rank(self.text(image))
         letter, plus = parts
+        # слишком крупную букву Tesseract не узнаёт — приводим к высоте около 50 px
+        k = 50 / letter.shape[0]
+        letter = cv2.resize(letter, None, fx=k, fy=k, interpolation=cv2.INTER_AREA)
+        _, letter = cv2.threshold(letter, 127, 255, cv2.THRESH_BINARY)
         padded = cv2.copyMakeBorder(letter, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
         guesses = []
         for psm in (10, 7, 8):

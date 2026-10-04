@@ -209,11 +209,17 @@ class Eyes:
             return []
         return self.ocr.text(crop(self.image, rect), whitelist)
 
+    def _read(self, element_id: str, parse, whitelist=None):
+        rect = self.region(element_id)
+        if rect is None or self.ocr is None:
+            return None
+        return self.ocr.read(crop(self.image, rect), parse, whitelist)
+
     def read_hp(self, element_id: str):
-        return parse_hp(self._texts(element_id, "0123456789/"))
+        return self._read(element_id, parse_hp, "0123456789/")
 
     def read_percent(self, element_id: str):
-        return parse_percent(self._texts(element_id, "0123456789%"))
+        return self._read(element_id, parse_percent, "0123456789%")
 
     def read_rank(self, element_id: str):
         rect = self.region(element_id)
@@ -222,4 +228,4 @@ class Eyes:
         return self.ocr.rank(crop(self.image, rect))
 
     def read_name(self, element_id: str, names):
-        return best_name(self._texts(element_id), names)
+        return self._read(element_id, lambda texts: best_name(texts, names))
