@@ -63,6 +63,16 @@ def move_to(point) -> None:
         time.sleep(duration / len(path))
 
 
+VK_ESCAPE = 0x1B
+_KEYEVENTF_KEYUP = 0x0002
+
+
+def press_key(vk: int) -> None:
+    _user32.keybd_event(vk, 0, 0, 0)
+    time.sleep(random.uniform(0.05, 0.12))
+    _user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)
+
+
 def click(rect) -> None:
     check_failsafe()
     move_to(random_point(rect))

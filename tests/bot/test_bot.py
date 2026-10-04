@@ -215,16 +215,31 @@ def test_caught_target_is_skipped(tmp_path):
     assert bot._map_targets() is None
 
 
-def test_trains_while_train_button_lit(tmp_path):
+def _train_bot(tmp_path, ready_rows):
+    import numpy as np
+
     from mbot.storage import Step
 
     eyes = FakeEyes([{"see": set()}])
-    eyes.teaching.elements["train_ready"] = Snapshot((0, 0, 5, 5))
-    eyes.teaching.routes["train"] = [Step(Snapshot((0, 0, 5, 5)))]
-    lit = iter([True, True, False])
-    bot, _ = make_bot(eyes, tmp_path)
-    eyes.sees = lambda element_id: (1, 1, 5, 5) if element_id == "train_ready" and next(lit, False) else None
-    routes = []
-    bot._run_route = routes.append
-    bot._after_battle(None, None, False, 0, 1.0)
-    assert routes == ["train", "train"] and bot.stats.trainings == 2
+    img = np.zeros((110, 110, 3), np.uint8)
+    eyes.teaching.routes["train"] = [Step(Snapshot((i, 0, 5, 5), img)) for i in range(5)]
+    bot, clicks = make_bot(eyes, tmp_path)
+    rows = iter(ready_rows)
+    bot._find_anywhere = lambda image, timeout, threshold=None: (9, 9, 5, 5) if next(rows, False) else None
+    steps = []
+    bot._click_step = lambda step, timeout: steps.append(step.snap.rect[0]) or True
+    bot._dismiss_popups_quietly = lambda: None
+    return bot, clicks, steps
+
+
+def test_train_all_ready_then_close(tmp_path):
+    bot, clicks, steps = _train_bot(tmp_path, [True, True, False])
+    assert bot._train() == 2
+    # открыть (0), два раза TRAIN NOW и Continue (2, 3), закрыть (4); строки READY кликаются отдельно
+    assert steps == [0, 2, 3, 2, 3, 4] and clicks.count((9, 9, 5, 5)) == 2
+
+
+def test_train_nobody_ready_closes_without_pause(tmp_path):
+    bot, clicks, steps = _train_bot(tmp_path, [False])
+    assert bot._train() == 0
+    assert steps == [0, 4] and not bot._paused.is_set()

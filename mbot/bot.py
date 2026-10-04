@@ -13,7 +13,8 @@ import cv2
 from .brain.capture import CAPTURE, decide
 from .brain.combat import ATTACK, STALL, DamageModel, choose_capture, choose_kill, moves_from_catalog
 from .collection import Collection
-from .mouse import FailSafe
+from .mouse import VK_ESCAPE, FailSafe, press_key
+from .screen import find
 from .storage import ABILITY_SLOTS, POPUPS
 from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
 
@@ -25,6 +26,14 @@ WALK_STEPS = 14
 CLICK_HALF = 14
 MISS_RETRIES = 2
 MAX_TRAININGS = 4  # критов в команде
+BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 8, 0.2, 12.0
+
+
+def ready_label_of(row):
+    """Из снимка строки готового крита — только низ с меткой «READY TO TRAIN», без имени и портрета:
+    так шаблон подходит к любому готовому криту."""
+    h = row.shape[0]
+    return row[int(h * 0.6):int(h * 0.95), :]
 
 
 class Stopped(Exception):
@@ -674,14 +683,8 @@ class Bot:
             self._press(rect, found)
             self._sleep(0.8)
         self._publish_stats()
-        # опыт получает вся команда, готовыми могут оказаться сразу несколько — тренируем, пока подсвечено
-        for _ in range(MAX_TRAININGS):
-            if not self._should_train():
-                break
-            self._run_route("train")
-            self.stats.trainings += 1
-            if not self.eyes.knows("train_ready"):
-                break  # без подсветки не видно, остался ли кто-то, — по одному разу за N боёв
+        if self._should_train():
+            self.stats.trainings += self._train()
         if my_ratio * 100 < self.settings.heal_below:
             self._say(f"HP {my_ratio:.0%} — иду лечиться")
             self._run_route("heal")
@@ -689,13 +692,81 @@ class Bot:
         self._publish_stats()
 
     def _should_train(self) -> bool:
-        if "train" not in self.eyes.teaching.routes:
+        steps = self.eyes.teaching.routes.get("train") or []
+        if len(steps) < 3:
             return False
-        if self.eyes.knows("train_ready"):
-            self.eyes.look()
-            return self.eyes.sees("train_ready") is not None
         every = self.settings.train_every
-        return bool(every) and self.stats.battles % every == 0
+        if every and self.stats.battles % every == 0:
+            return True
+        return self._train_button_blinks(steps[0].snap)
+
+    def _train_button_blinks(self, snap) -> bool:
+        """Когда кто-то готов к тренировке, кнопка Train мигает: в отдельном кадре она может выглядеть
+        обычной, поэтому смотрим на неё полторы секунды и сравниваем яркость кадров."""
+        self.eyes.look()
+        rect = self.eyes.sees_snap(snap, threshold=0.6, anywhere=True)
+        if rect is None:
+            return False
+        x, y, w, h = rect
+        levels = []
+        for _ in range(BLINK_FRAMES):
+            self.eyes.look()
+            levels.append(float(self.eyes.image[y:y + h, x:x + w].mean()))
+            time.sleep(BLINK_INTERVAL)
+        return max(levels) - min(levels) >= BLINK_DELTA
+
+    def _train(self) -> int:
+        """Тренирует всех готовых. Шаги маршрута «Тренировка»: [0] кнопка Train, [1] строка крита с меткой
+        READY (берём только метку — подойдёт любой готовый крит), [2..-2] кнопки тренировки и попапы
+        (TRAIN NOW, Continue, эволюция…), [-1] закрыть окно. Возвращает, скольких натренировали."""
+        steps = self.eyes.teaching.routes["train"]
+        open_step, ready_step, middle, close_step = steps[0], steps[1], steps[2:-1], steps[-1]
+        ready_label = ready_label_of(ready_step.snap.image)
+        self._state("тренировка")
+        if not self._click_step(open_step, timeout=6):
+            return 0
+        trained = 0
+        for _ in range(MAX_TRAININGS):
+            row = self._find_anywhere(ready_label, timeout=4, threshold=0.75)
+            if row is None:
+                break
+            self._press(row, "READY")
+            self._sleep(0.8)
+            for step in middle:
+                self._click_step(step, timeout=4 if step.optional else 8)
+            self._dismiss_popups_quietly()
+            trained += 1
+        self._say(f"натренировано: {trained}" if trained else "тренировать некого — закрываю окно")
+        if not self._click_step(close_step, timeout=4):
+            press_key(VK_ESCAPE)
+        self._sleep(0.8)
+        return trained
+
+    def _find_anywhere(self, image, timeout, threshold=None):
+        end = time.monotonic() + timeout
+        while True:
+            self._checkpoint()
+            self.eyes.look()
+            rect = find(self.eyes.image, image, threshold or self.eyes.threshold)
+            if rect is not None or time.monotonic() >= end:
+                return rect
+            time.sleep(0.3)
+
+    def _click_step(self, step, timeout) -> bool:
+        rect = self._find_anywhere(step.snap.image, timeout)
+        if rect is None:
+            return False
+        self._press(rect, "train step")
+        self._sleep(random.uniform(0.7, 1.2))
+        return True
+
+    def _dismiss_popups_quietly(self):
+        for _ in range(4):
+            found, rect = self._wait_for(POPUPS, timeout=1.5)
+            if found is None:
+                return
+            self._press(rect, found)
+            self._sleep(0.6)
 
     def _run_route(self, name: str):
         steps = self.eyes.teaching.routes.get(name)
