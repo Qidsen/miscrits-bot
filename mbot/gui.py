@@ -39,6 +39,7 @@ SETTING_LABELS = {
     "break_len_min": "Длина перерыва от, мин",
     "break_len_max": "Длина перерыва до, мин",
     "session_limit_min": "Лимит сессии, мин (0 — без лимита)",
+    "spot_cooldown": "Кулдаун точки поиска (с момента клика), с",
     "heal_below": "Идти лечиться, если HP ниже, %",
     "plat_capture_limit": "Платиновых попыток за бой (Exotic/Legendary)",
     "capture_min_chance": "Жать Capture с шанса, %",

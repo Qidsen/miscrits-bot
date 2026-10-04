@@ -21,6 +21,7 @@ class Settings:
     break_len_min: int = 2        # длина перерыва, минут
     break_len_max: int = 8
     session_limit_min: int = 240  # 0 — без лимита
+    spot_cooldown: int = 20       # кулдаун точки поиска с момента клика, с
     heal_below: int = 40          # % HP моего крита после боя, ниже которого идём лечиться
     plat_capture_limit: int = 3   # платиновых попыток за бой (только Exotic/Legendary)
     capture_min_chance: int = 70  # %, с которого жмём Capture

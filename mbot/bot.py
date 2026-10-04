@@ -61,6 +61,7 @@ class Bot:
         self._pages = {}  # имя моего крита -> [[имена способностей по слотам] по страницам]
         self._page = 0
         self._spot = 0
+        self._spot_used = {}  # номер точки -> time.monotonic() последнего клика
         self._next_break = None
         self._thread = None
         self.pause_reason = ""
@@ -261,26 +262,32 @@ class Bot:
 
     def _hunt(self):
         spots = self.eyes.teaching.spots
+        # Кулдаун точки идёт с момента клика по ней, бой входит в это время — считаем его сами.
+        cooldown = self.settings.spot_cooldown + 1
+        now = time.monotonic()
+        order = [(self._spot + k) % len(spots) for k in range(len(spots))]
+        ready = [i for i in order if now - self._spot_used.get(i, float("-inf")) >= cooldown]
+        if not ready:
+            wait = min(cooldown - (now - self._spot_used[i]) for i in order)
+            self._state(f"все точки на кулдауне, жду {wait:.0f} с")
+            self._sleep(wait + random.uniform(0.3, 1.5))
+            return
         self._state("ищу мискрита")
-        for _ in range(len(spots)):
-            spot = spots[self._spot % len(spots)]
-            self._spot += 1
-            self.eyes.look()
-            rect = self.eyes.sees_snap(spot, threshold=0.7)
+        self.eyes.look()
+        for i in ready:
+            rect = self.eyes.sees_snap(spots[i], threshold=0.7)
             if rect is None:
                 continue
-            self._press(rect, f"spot {self._spot % len(spots)}")
+            self._spot = i + 1
+            self._press(rect, f"spot {i + 1}")
+            self._spot_used[i] = time.monotonic()
             found, _ = self._wait_for(("battle", "come_back_later", *POPUPS), timeout=6)
             if found == "battle":
                 self._battle()
-                return
-            if found in POPUPS:
-                return  # нашли предмет/золото — попап закроется на следующем шаге
-            # кулдаун или ничего не произошло — следующая точка
-        else:
-            if not any(self.eyes.sees_snap(s, threshold=0.7) for s in spots):
-                raise Stuck("не вижу ни одной точки поиска")
-            self._sleep(random.uniform(2, 4))  # все точки на кулдауне
+            # come_back_later: наш отсчёт разошёлся с игрой — он уже начат заново с момента клика;
+            # попап (предмет/золото) закроется на следующем шаге
+            return
+        raise Stuck("не вижу ни одной точки поиска")
 
     # ---- бой ----
 

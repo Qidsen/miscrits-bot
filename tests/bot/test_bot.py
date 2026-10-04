@@ -120,3 +120,33 @@ def test_low_hp_triggers_heal_route(tmp_path):
     bot._run_route = routes.append
     bot._battle()
     assert routes == ["heal"]
+
+
+class SpotEyes(FakeEyes):
+    def __init__(self, count):
+        super().__init__([{"see": set()}])
+        self.teaching.spots = [Snapshot((i * 100, 0, 10, 10)) for i in range(count)]
+
+    def sees_snap(self, snap, threshold=None, anywhere=False):
+        return snap.rect
+
+
+def test_spots_rotate_and_respect_cooldown_from_click(tmp_path):
+    eyes = SpotEyes(2)
+    bot, clicks = make_bot(eyes, tmp_path)
+    clock = mbot_time()
+    bot._hunt()
+    bot._hunt()
+    assert clicks == [(0, 0, 10, 10), (100, 0, 10, 10)]
+    waited = []
+    bot._sleep = waited.append
+    bot._hunt()  # обе точки нажаты только что — ждём, ничего не кликаем
+    assert len(clicks) == 2 and waited and waited[0] > 5
+    clock.now += 30
+    bot._hunt()
+    assert clicks[-1] == (0, 0, 10, 10)
+
+
+def mbot_time():
+    import mbot.bot
+    return mbot.bot.time
