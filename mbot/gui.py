@@ -316,8 +316,7 @@ class MainWindow(QMainWindow):
         v.addWidget(self.battle_sides)
         self.battle_moves = QTableWidget(0, 8)
         self.battle_moves.setHorizontalHeaderLabels(["Атака", "Стихия", "× стихии", "Ожидаемо", "Худший случай",
-                                                     "Откуда прогноз", "Ударов видел
-(по этой стихии)", "Вердикт"])
+                                                     "Откуда прогноз", "Ударов видел (по этой стихии)", "Вердикт"])
         self.battle_moves.verticalHeader().setVisible(False)
         self.battle_moves.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.battle_moves.setSelectionMode(QAbstractItemView.NoSelection)
