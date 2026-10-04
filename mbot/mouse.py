@@ -27,13 +27,17 @@ def check_failsafe() -> None:
         raise FailSafe()
 
 
+CLICK_JITTER = 10  # px: дальше от центра не уходим — рядом с кнопкой бывают платные (Bonus Stat за платину)
+
+
 def random_point(rect, rng=random) -> tuple:
-    """Точка ближе к центру прямоугольника, но не ровно в центре."""
+    """Точка у центра прямоугольника (не ровно в центре, как человек). Центр — то место, куда при обучении
+    навели мышь, а сам квадрат снимка бывает много больше кнопки, поэтому разброс маленький."""
     x, y, w, h = rect
-    px = x + w / 2 + rng.gauss(0, w / 7)
-    py = y + h / 2 + rng.gauss(0, h / 7)
-    return (int(min(max(px, x + w * 0.15), x + w * 0.85)),
-            int(min(max(py, y + h * 0.15), y + h * 0.85)))
+    jx, jy = min(w * 0.12, CLICK_JITTER), min(h * 0.12, CLICK_JITTER)
+    px = x + w / 2 + max(-jx, min(jx, rng.gauss(0, jx / 2)))
+    py = y + h / 2 + max(-jy, min(jy, rng.gauss(0, jy / 2)))
+    return int(px), int(py)
 
 
 def bezier_path(start, end, rng=random) -> list:

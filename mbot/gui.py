@@ -786,13 +786,30 @@ class MainWindow(QMainWindow):
             self.capture_hint.setText("")
             self.spot_hint.setText(f"Точек: {len(self.teaching.spots)}. F4 — ещё одна, «Готово» — закончить.")
         elif kind == "route":
-            name = self.capture_mode[1]
+            _, name, insert_at = self.capture_mode
             rect = around(pos, self.settings.button_size, image.shape)
-            self.teaching.routes.setdefault(name, []).append(Step(Snapshot(rect, crop(image, rect).copy())))
+            steps = self.teaching.routes.setdefault(name, [])
+            step = Step(Snapshot(rect, crop(image, rect).copy()))
+            if insert_at is None:
+                steps.append(step)
+                done = len(steps)
+            else:
+                steps.insert(insert_at, step)
+                done = insert_at + 1
+                self.capture_mode = ("route", name, insert_at + 1)  # следующие — за только что вставленным
             # кликаем за пользователя — так запись идёт в один проход: F4 = «запомнить и нажать»
             mouse.click(to_screen(rect))
-            self.route_hint.setText(f"Записано шагов: {len(self.teaching.routes[name])}. "
+            self.route_hint.setText(f"Записан шаг {done} (всего {len(steps)}). "
                                     "F4 на следующем элементе или «Закончить запись».")
+        elif kind == "reshoot":
+            _, name, row = self.capture_mode
+            rect = around(pos, self.settings.button_size, image.shape)
+            steps = self.teaching.routes.get(name, [])
+            if 0 <= row < len(steps):
+                steps[row].snap = Snapshot(rect, crop(image, rect).copy())
+            mouse.click(to_screen(rect))
+            self.capture_mode = None
+            self.route_hint.setText(f"Шаг {row + 1} переснят ✔")
         self._save_teaching()
 
     def _test_screen(self):
@@ -894,8 +911,19 @@ class MainWindow(QMainWindow):
         for b in (rec, stop, optional, remove, wipe):
             row.addWidget(b)
         rv.addLayout(row)
+        edit_row = QHBoxLayout()
+        up = QPushButton("▲  Выше")
+        up.clicked.connect(lambda: self._move_step(-1))
+        down = QPushButton("▼  Ниже")
+        down.clicked.connect(lambda: self._move_step(1))
+        reshoot = QPushButton("Переснять шаг (F4)")
+        reshoot.clicked.connect(self._reshoot_step)
+        for b in (up, down, reshoot):
+            edit_row.addWidget(b)
+        edit_row.addWidget(_hint("Выбран шаг — «Записать» вставит новые шаги сразу после него."), 1)
+        rv.addLayout(edit_row)
         v.addWidget(routes_box, 1)
-        self._teach_buttons_routes = [mark, add, delete, rec, optional, remove, wipe]
+        self._teach_buttons_routes = [mark, add, delete, rec, optional, remove, wipe, up, down, reshoot]
         return w
 
     def _start_location_shot(self):
@@ -929,8 +957,28 @@ class MainWindow(QMainWindow):
         return self.route_combo.currentData()
 
     def _record_route(self):
-        self.capture_mode = ("route", self._route_key())
-        self.route_hint.setText("Запись идёт: F4 на каждом шаге в игре.")
+        # если в списке выбран шаг, новые шаги встают сразу после него, иначе — в конец
+        row = self.route_list.currentRow()
+        self.capture_mode = ("route", self._route_key(), row + 1 if row >= 0 else None)
+        where = f"после шага {row + 1}" if row >= 0 else "в конец маршрута"
+        self.route_hint.setText(f"Запись идёт ({where}): F4 на каждом шаге в игре.")
+
+    def _reshoot_step(self):
+        row = self.route_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Маршрут", "Выберите шаг, который нужно переснять.")
+            return
+        self.capture_mode = ("reshoot", self._route_key(), row)
+        self.route_hint.setText(f"Пересъёмка шага {row + 1}: F4 на нужной кнопке в игре (она будет нажата).")
+
+    def _move_step(self, delta):
+        steps = self.teaching.routes.get(self._route_key(), [])
+        row = self.route_list.currentRow()
+        target = row + delta
+        if 0 <= row < len(steps) and 0 <= target < len(steps):
+            steps[row], steps[target] = steps[target], steps[row]
+            self._save_teaching()
+            self.route_list.setCurrentRow(target)
 
     def _finish_capture(self):
         self.capture_mode = None

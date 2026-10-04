@@ -756,8 +756,15 @@ class Bot:
         rect = self._find_anywhere(step.snap.image, timeout)
         if rect is None:
             return False
-        self._press(rect, "train step")
-        self._sleep(random.uniform(0.7, 1.2))
+        for attempt in range(3):
+            self._press(rect, "train step" + (f" (ещё раз, {attempt})" if attempt else ""))
+            self._sleep(random.uniform(0.7, 1.2))
+            # кнопка осталась на месте — нажатие не сработало (промах или окно ещё не ожило), жмём ещё
+            self.eyes.look()
+            again = find(self.eyes.image, step.snap.image, self.eyes.threshold, near=rect)
+            if again is None:
+                return True
+            rect = again
         return True
 
     def _dismiss_popups_quietly(self):
