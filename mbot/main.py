@@ -11,7 +11,7 @@ from miscrits_hud.config import app_dir
 
 from . import theme
 from .gui import MainWindow
-from .settings import bot_dir, load_settings
+from .settings import bot_dir, load_settings, save_settings
 from .storage import load_teaching
 
 
@@ -57,6 +57,7 @@ def main() -> int:
         return app.exec()
     finally:
         window.unregister_hotkeys()
+        save_settings(settings_path, window.settings)  # последнее изменение могло не успеть записаться
         if window.bot and window.bot.running:
             window.bot.stop()
         hud.shutdown()

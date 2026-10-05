@@ -116,6 +116,10 @@ class MainWindow(QMainWindow):
         self.region_corner = None
 
         self.setting_widgets = {}
+        self._tesseract_checked = {}  # путь к tesseract -> найден ли
+        self._save_timer = QTimer(self)  # на диск пишем, когда пользователь перестал крутить значение
+        self._save_timer.setSingleShot(True)
+        self._save_timer.timeout.connect(lambda: save_settings(self.settings_path, self.settings))
         sections = (
             ("Работа", (("🕹", "Бот", "bot", self._bot_tab), ("🎯", "Охота", "hunt", self._hunt_tab))),
             ("Знания", (("💥", "Урон", "damage", self._damage_tab), ("🏅", "Ранги", "ranks", self._ranks_tab))),
@@ -368,9 +372,16 @@ class MainWindow(QMainWindow):
             problems.append("Не найден каталог игры (miscrits.json) — запустите игру")
         if self.hud.controller.player is None:
             problems.append("Коллекция ещё не загружена (HUD) — бот будет считать, что у вас нет никого")
-        if not Ocr(self.settings.tesseract_cmd).available():
+        if not self._tesseract_ok():
             problems.append(f"Tesseract не найден: {self.settings.tesseract_cmd}")
         return problems
+
+    def _tesseract_ok(self) -> bool:
+        """Проверка Tesseract запускает его как отдельную программу — делаем это один раз на каждый путь."""
+        cmd = self.settings.tesseract_cmd
+        if cmd not in self._tesseract_checked:
+            self._tesseract_checked[cmd] = Ocr(cmd).available()
+        return self._tesseract_checked[cmd]
 
     def _on_start(self):
         if self.bot and self.bot.running:
@@ -1447,8 +1458,9 @@ class MainWindow(QMainWindow):
                     widget.blockSignals(True)
                     widget.setValue(value)
                     widget.blockSignals(False)
-        save_settings(self.settings_path, self.settings)
-        self._refresh_checks()
+        self._save_timer.start(400)
+        if name == "tesseract_cmd":
+            self._refresh_checks()  # остальные настройки на готовность к запуску не влияют
         mark.setText("✓ Сохранено")
         timer = getattr(mark, "_timer", None)
         if timer is None:
