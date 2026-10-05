@@ -953,6 +953,8 @@ class Bot:
             name = self._who_in(slot)
             if not name or name == my_name or name not in self._pages:
                 continue
+            if self._crit_hp.get(name, 1.0) * 100 < self.settings.test_min_hp_pct:
+                continue  # полуживой не продержится, пока подводим HP цели
             species = by_name.get(name)
             if species is None:
                 continue
