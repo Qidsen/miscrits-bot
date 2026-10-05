@@ -438,3 +438,18 @@ def test_use_finds_ability_on_any_button_and_turns_back_at_the_edge(tmp_path):
     assert clicks[-1][0] == "Sleep"
     bot._use("Ember", "Blazertooth")  # Ember только на второй
     assert clicks[-1][0] == "Ember"
+
+
+def test_team_choice_respects_level_and_hp(tmp_path):
+    eyes = FakeEyes([{"see": set()}])
+    for k in ("team_1", "team_2", "team_3", "switch_confirm"):
+        eyes.teaching.elements[k] = Snapshot((0, 0, 10, 10))
+    bot, _ = make_bot(eyes, tmp_path)
+    who = {"team_1": "Baby", "team_2": "Tired", "team_3": "Strong"}
+    bot._who_in = lambda slot: who[slot]
+    levels = {"Baby": 7, "Tired": 30, "Strong": 30}
+    bot._crit_level = lambda name: levels.get(name)
+    bot._crit_hp = {"Tired": 0.2, "Strong": 0.9}
+    assert bot._least_known_slot(enemy_level=16) == "team_3"  # 7-й уровень против 16-го и полуживой — нет
+    assert bot._healthy_slot(enemy_level=16) == "team_3"
+    assert bot._healthy_slot(enemy_level=16, exclude="Strong") is None

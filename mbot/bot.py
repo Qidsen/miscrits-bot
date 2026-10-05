@@ -34,6 +34,9 @@ MISS_RETRIES = 2
 EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
+LOW_HP_SWITCH = 0.35  # в боях «на убой» при таком HP активного крита меняем его на здорового
+FIT_HP = 0.5  # выпускать на проверки только критов, у которых HP не меньше половины
+LEVEL_GAP = 3  # и чей уровень не ниже уровня противника больше чем на столько
 SWITCH_FAILS_MAX = 3  # столько неудачных смен подряд — и смена выключается до конца сессии
 NO_CAPTURE_TURNS = 2  # столько ходов подряд не видим Capture, когда надо ловить, — пауза и скриншот
 # способности, которыми можно тянуть время при поимке: не трогают HP цели
@@ -119,6 +122,7 @@ class Bot:
         self._marker_used = {}
         self._all_caught_said = False
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
+        self._crit_hp = {}  # имя крита -> доля HP, когда видели его последний раз
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
@@ -651,6 +655,8 @@ class Bot:
                 my_ratio = mine[0] / mine[1]
             my_name = self.eyes.read_name("my_name", by_name)
             me = by_name.get(my_name)
+            if my_name and mine:
+                self._crit_hp[my_name] = my_ratio  # HP сохраняется между боями до лечения
             my_level = self.eyes.read_level("my")
             self.hits.attacker_level = my_level
             if switched is not None and my_name:
@@ -674,6 +680,15 @@ class Bot:
                 self._switch_fails = 0
                 self._portraits[my_name] = portrait  # теперь знаем, чей это портрет
                 self._say(f"сменил крита: теперь {my_name}")
+                level = self._crit_level(my_name)
+                enemy_level = self.hits.level
+                if decision.action != CAPTURE and level and enemy_level and level < enemy_level - LEVEL_GAP:
+                    back = self._healthy_slot(enemy_level, exclude=my_name)
+                    if back is not None:
+                        self._say(f"{my_name} ур. {level} против ур. {enemy_level} — слишком слабый, меняю обратно")
+                        switched = (self._switch(back), my_name, back)
+                        last = None
+                        continue
             target_element = enemy.element if enemy else ""
             if last and hp and last[0] == my_name and hp[0] <= last[2]:
                 # один наш удар за ход: урон = HP цели до него минус HP сейчас. Если HP выросло (противник
@@ -747,10 +762,18 @@ class Bot:
                 move = action.move
             else:
                 move = None
+                if my_ratio < LOW_HP_SWITCH and self.settings.explore_switch:
+                    slot = self._healthy_slot(self.hits.level, exclude=my_name)
+                    if slot is not None:
+                        who = self._who_in(slot) or "другого крита"
+                        self._say(f"у {my_name} HP {my_ratio:.0%} — меняю на {who}, чтобы не умер")
+                        switched = (self._switch(slot), my_name, slot)
+                        last = None
+                        continue
                 if (not explore_switch_done and self.settings.explore_switch and my_ratio > EXPLORE_MIN_HP
                         and random.random() < EXPLORE_SWITCH_CHANCE):
                     explore_switch_done = True
-                    slot = self._least_known_slot()
+                    slot = self._least_known_slot(self.hits.level, exclude=my_name)
                     if slot is not None:
                         who = self._who_in(slot) or "незнакомого крита"
                         self._say(f"убиваем, можно поучиться: пробую {who} — по нему мало данных об уроне")
@@ -889,15 +912,44 @@ class Bot:
         self._sleep(1.0)
         return portrait
 
-    def _least_known_slot(self):
-        """Ячейка с критом, по которому меньше всего ударов в журнале (незнакомые — первыми)."""
-        slots = self._team()
-        if not slots:
-            return None
-        def known(slot):
+    def _crit_level(self, name):
+        species = self._species_named(name) if name else None
+        copy = owned_copy(self._player_fn(), species) if species else None
+        return copy.get("l") if copy else None
+
+    def _fit_for(self, name, enemy_level) -> bool:
+        """Можно ли выпускать этого крита: не ниже противника больше чем на LEVEL_GAP уровней и не полуживой."""
+        level = self._crit_level(name)
+        if level and enemy_level and level < enemy_level - LEVEL_GAP:
+            return False
+        return self._crit_hp.get(name, 1.0) >= FIT_HP
+
+    def _least_known_slot(self, enemy_level=None, exclude=None):
+        """Ячейка с подходящим критом, по которому меньше всего ударов в журнале (незнакомые — первыми:
+        их уровень узнаем после смены и, если слабый, вернём сильного)."""
+        best, best_key = None, None
+        for slot in self._team():
             name = self._who_in(slot)
-            return -1 if name is None else sum(1 for h in self.hits.hits if h.attacker == name)
-        return min(slots, key=lambda s: (known(s), random.random()))
+            if name is not None and (name == exclude or not self._fit_for(name, enemy_level)):
+                continue
+            canon = self.hits.canon(name) if name else None
+            known = -1 if name is None else sum(1 for h in self.hits.hits if h.attacker == canon)
+            key = (known, random.random())
+            if best_key is None or key < best_key:
+                best, best_key = slot, key
+        return best
+
+    def _healthy_slot(self, enemy_level=None, exclude=None):
+        """Знакомый крит с запасом HP и подходящим уровнем — самый здоровый."""
+        best, best_hp = None, None
+        for slot in self._team():
+            name = self._who_in(slot)
+            if name is None or name == exclude or not self._fit_for(name, enemy_level):
+                continue
+            hp = self._crit_hp.get(name, 1.0)
+            if best_hp is None or hp > best_hp:
+                best, best_hp = slot, hp
+        return best
 
     def _better_catcher(self, my_name, by_name, target_element, hp, precious):
         """(ячейка, имя) крита команды, у которого есть безопасный удар, приближающий цель к порогу, или None.
@@ -1167,6 +1219,7 @@ class Bot:
             self._say(f"HP {my_ratio:.0%} — иду лечиться")
             self._run_route("heal")
             self.stats.heals += 1
+            self._crit_hp.clear()  # вылечили всех
         self._publish_stats()
 
     def _summary_says_train(self):
