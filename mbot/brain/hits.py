@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 
 from .combat import DamageModel, Move
-from .formula import base_damage, fit
+from .formula import base_damage, fit, stats_at
 
 FIELDS = ("time", "attacker", "attacker_level", "ability", "ap", "times", "atk_element", "enemy", "enemy_element",
           "enemy_level", "enemy_max_hp", "damage", "enemy_rank", "kill")
@@ -69,10 +69,13 @@ class HitBook:
     Перед ходом бот задаёт контекст: level/enemy/enemy_rank (противник) и attacker_level (мой крит).
     stats(attacker, attacker_level, enemy, enemy_level, enemy_rank) -> (статы атакующего, статы цели) | None."""
 
-    def __init__(self, path, fallback: DamageModel, stats=None):
+    def __init__(self, path, fallback: DamageModel, stats=None, species_of=None):
+        """species_of(имя) -> вид из каталога: эволюции одного вида (Spike → Magmutt) — один и тот же крит,
+        удары ведём под именем базовой формы, а удары с другого уровня пересчитываем по атаке на уровне."""
         self.path = path
         self.fallback = fallback
         self.stats = stats
+        self.species_of = species_of
         self.level = None  # уровень текущего противника
         self.enemy = None  # имя текущего противника
         self.enemy_rank = None
@@ -87,13 +90,17 @@ class HitBook:
                     if hit is not None:
                         self.hits.append(hit)
 
-    @staticmethod
-    def _from_row(row):
+    def canon(self, name):
+        """Имя базовой формы вида: Magmutt и Spike — один крит."""
+        species = self.species_of(name) if self.species_of and name else None
+        return species.names[0] if species is not None else name
+
+    def _from_row(self, row):
         ap, times = _int(row.get("ap")) or 0, _int(row.get("times")) or 1
         max_hp, damage = _int(row.get("enemy_max_hp")), _int(row.get("damage"))
         if not ap or not max_hp or damage is None:
             return None
-        return Hit(row.get("attacker", ""), _int(row.get("attacker_level")), row.get("ability", ""), ap, times,
+        return Hit(self.canon(row.get("attacker", "")), _int(row.get("attacker_level")), row.get("ability", ""), ap, times,
                    row.get("atk_element", ""), row.get("enemy", ""), row.get("enemy_element", ""),
                    _int(row.get("enemy_level")), row.get("enemy_rank") or None, max_hp, damage,
                    (row.get("kill") or "") in ("1", "True", "true"), row.get("time") or "")
@@ -101,6 +108,7 @@ class HitBook:
     def record(self, attacker, attacker_level, move: Move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
                damage, enemy_rank=None, kill=False) -> None:
         """Записать удар (и промах — damage 0) в журнал; в прогноз идут только попадания."""
+        attacker = self.canon(attacker)
         row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "attacker": attacker, "attacker_level": attacker_level or "",
                "ability": move.name, "ap": move.ap, "times": move.times, "atk_element": move.element,
                "enemy": enemy_name, "enemy_element": enemy_element, "enemy_level": enemy_level or "",
@@ -121,6 +129,18 @@ class HitBook:
 
     # ---- похожие удары ----
 
+    def level_factor(self, hit, move) -> float:
+        """Во сколько раз крит сейчас сильнее, чем в момент этого удара: атака на текущем уровне / на тогдашнем
+        (физическая или стихийная — смотря какой атакой). Без уровней — 1."""
+        if not (self.species_of and hit.attacker_level and self.attacker_level) or hit.attacker_level == self.attacker_level:
+            return 1.0
+        species = self.species_of(hit.attacker)
+        if species is None:
+            return 1.0
+        stat = "pa" if move.element == "Physical" else "ea"
+        then, now = stats_at(species, hit.attacker_level)[stat], stats_at(species, self.attacker_level)[stat]
+        return now / then if then else 1.0
+
     def _same(self, attacker, move, target_element):
         """Удары по цели этой стихии: сначала этой же атакой; если ею ещё не били — атаками той же стихии
         с тем же числом ударов (Cinders 1×7 и The Big Finale 4×7 обе Fire, но бьют по-разному)."""
@@ -132,12 +152,6 @@ class HitBook:
 
     def _similar(self, attacker, move, target_element):
         same = self._same(attacker, move, target_element)
-        if self.attacker_level is not None:
-            # крит растёт — удары с другого его уровня устарели; берём сделанные на этом уровне (±1), если их хватает
-            current = [h for h in same if h.attacker_level is not None
-                       and abs(h.attacker_level - self.attacker_level) <= ATTACKER_LEVEL_STEP]
-            if len(current) >= MIN_SIMILAR:
-                same = current
         if self.level is None:
             return same
         for step in LEVEL_STEPS:
@@ -165,6 +179,7 @@ class HitBook:
 
     def formula(self, attacker, move, target_element):
         """(ожидаемо, худший случай) по формуле для текущего противника или None."""
+        attacker = self.canon(attacker)
         if self.stats is None or self.enemy is None:
             return None
         cal = self.calibration()
@@ -186,17 +201,20 @@ class HitBook:
 
     def estimate_with_source(self, attacker, move, target_element, max_hp=None):
         """(ожидаемо, худший случай, откуда: «журнал» / «формула» / «общая»)."""
+        attacker = self.canon(attacker)
         similar = self._similar(attacker, move, target_element) if max_hp else []
         by_formula = None if len(similar) >= TRUST_SIMILAR else self.formula(attacker, move, target_element)
         if similar and by_formula is None:
-            shares = [h.share for h in similar if not h.kill] or [h.share for h in similar]
-            mean, top = sum(shares) / len(shares), max(h.share for h in similar)  # добившие — только в максимум
+            # крит с тех пор подрос — пересчитываем старые удары на его нынешнюю атаку
+            scaled = [(h, h.share * self.level_factor(h, move)) for h in similar]
+            shares = [s for h, s in scaled if not h.kill] or [s for _, s in scaled]
+            mean, top = sum(shares) / len(shares), max(s for _, s in scaled)  # добившие — только в максимум
             margin = (1.3 if move.times > 1 else 1.15) if len(shares) >= 3 else 1.5
             return mean * move.power * max_hp, top * margin * move.power * max_hp, "журнал"
         if by_formula is not None:
             expected, worst = by_formula
             # удары, которые добивали, — «урон не меньше»: худший случай не ниже того, что уже бывало
-            kills = [h.share for h in self._same(attacker, move, target_element) if h.kill]
+            kills = [h.share * self.level_factor(h, move) for h in self._same(attacker, move, target_element) if h.kill]
             if kills and max_hp:
                 worst = max(worst, max(kills) * move.power * max_hp * 1.2)
             return expected, worst, "формула"
@@ -204,7 +222,7 @@ class HitBook:
 
     def observed(self, attacker, move, target_element) -> int:
         """Сколько попаданий этой стихией по этой стихии цели видели (любого уровня)."""
-        return len(self._same(attacker, move, target_element))
+        return len(self._same(self.canon(attacker), move, target_element))
 
     def observe(self, *args, **kwargs):
         self.fallback.observe(*args, **kwargs)

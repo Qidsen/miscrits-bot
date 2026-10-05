@@ -35,7 +35,7 @@ from .settings import Settings, bot_dir, save_settings
 from .brain.combat import DamageModel
 from .brain.formula import stats_pair
 from .brain.hits import HitBook
-from .damage_report import attackers, groups, recent
+from .damage_report import attackers, evolution_name, groups, recent
 from .ranks import RANKS, RankBook, unknown_samples
 from .worldmap import Companion, Locator, view_rect
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
@@ -820,10 +820,10 @@ class MainWindow(QMainWindow):
         self.damage_title = QLabel("")
         self.damage_title.setObjectName("sectionTitle")
         right.addWidget(self.damage_title)
-        self.damage_table = QTableWidget(0, 10)
+        self.damage_table = QTableWidget(0, 11)
         self.damage_table.setHorizontalHeaderLabels(["Атака", "Стихия", "× ударов", "По стихии", "Попаданий",
                                                      "Добивающих", "Промахов", "Средний урон", "Мин–макс",
-                                                     "% HP цели"])
+                                                     "% HP цели", "Мои уровни"])
         for table in (self.damage_table,):
             table.verticalHeader().setVisible(False)
             table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -855,8 +855,10 @@ class MainWindow(QMainWindow):
         if self.bot is not None:
             return self.bot.hits  # тот же журнал, что у работающего бота
         player = self.hud.controller.player
+        catalog = self.catalogs.get()
+        species_of = (lambda name: next((s for s in catalog.species if name in s.names), None)) if catalog else None
         return HitBook(self.home / "hits.csv", DamageModel(),
-                       stats=lambda *a: stats_pair(self.catalogs.get(), player, *a))
+                       stats=lambda *a: stats_pair(self.catalogs.get(), player, *a), species_of=species_of)
 
     def _refresh_damage(self):
         self._damage_book = self._load_damage_book()
@@ -864,8 +866,12 @@ class MainWindow(QMainWindow):
         self.damage_crits.blockSignals(True)
         self.damage_crits.clear()
         rows = attackers(self._damage_book.hits)
+        catalog = self.catalogs.get()
         for name, level, count in rows:
-            item = QListWidgetItem(f"{name}" + (f" · ур. {level}" if level else "") + f"\n{count} ударов")
+            species = next((s for s in catalog.species if name in s.names), None) if catalog else None
+            form = evolution_name(species, level) if species else name
+            shown = name if form == name else f"{name} → {form}"  # эволюции одного вида — один крит
+            item = QListWidgetItem(shown + (f" · ур. {level}" if level else "") + f"\n{count} ударов")
             item.setData(Qt.UserRole, name)
             icon = self._icon(name) if hasattr(self, "_icon_store") else None
             if icon is not None:
@@ -896,14 +902,17 @@ class MainWindow(QMainWindow):
             return
         name = item.data(Qt.UserRole)
         hits = self._damage_book.hits
-        self.damage_title.setText(f"{name}: что известно об уроне")
-        data = groups(hits, name)
+        level = next((lvl for n, lvl, _ in attackers(hits) if n == name), None)
+        book = self._damage_book
+        book.attacker_level = level
+        self.damage_title.setText(f"{name}: что известно об уроне" + (f" — урон пересчитан на ур. {level}" if level else ""))
+        data = groups(hits, name, factor=lambda h: book.level_factor(h, h.move))
         self.damage_table.setRowCount(len(data))
         for i, g in enumerate(data):
             cells = (g.ability, g.atk_element, f"×{g.times}" if g.times > 1 else "1", g.enemy_element, str(g.hits),
                      str(g.kills), str(g.misses), f"{g.mean:.0f}" if g.hits else "—",
                      f"{g.low}–{g.high}" if g.hits else (f"≥{g.high}" if g.kills else "—"),
-                     f"{g.share:.0f}" if g.hits else "—")
+                     f"{g.share:.0f}" if g.hits else "—", g.my_levels)
             for col, value in enumerate(cells):
                 cell = QTableWidgetItem(value)
                 if col in (1, 3):

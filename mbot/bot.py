@@ -34,6 +34,7 @@ MISS_RETRIES = 2
 EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
+SWITCH_FAILS_MAX = 3  # столько неудачных смен подряд — и смена выключается до конца сессии
 NO_CAPTURE_TURNS = 2  # столько ходов подряд не видим Capture, когда надо ловить, — пауза и скриншот
 # способности, которыми можно тянуть время при поимке: не трогают HP цели
 SAFE_STALL_TYPES = {"Buff", "Heal", "Hot", "Block", "Cleanser", "Negate", "Antiheal", "Sleep", "Paralyze"}
@@ -121,6 +122,8 @@ class Bot:
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
+        self._switch_fails = 0  # неудачных смен подряд
+        self._blocked_slots = set()  # ячейки, смена на которые в этом бою не прошла
         self._train_seen = None  # что сказала сводка последнего боя про тренировку
         self._last_max_hp = None  # (локация, имя, x, y) -> time.monotonic() клика
         self._click = hands
@@ -136,7 +139,8 @@ class Bot:
         self.stats = Stats()
         self.model = self._load_model()
         # журнал ударов + прогноз: по похожим ударам, иначе по формуле со статами
-        self.hits = HitBook(learn_path.with_name("hits.csv"), self.model, stats=self._stats_pair)
+        self.hits = HitBook(learn_path.with_name("hits.csv"), self.model, stats=self._stats_pair,
+                            species_of=self._species_named)
         self._pages = {}  # имя моего крита -> [[имена способностей по слотам] по страницам]
         self._page = 0
         self._spot = 0
@@ -576,6 +580,7 @@ class Bot:
         by_name = {n: s for s in catalog.species for n in s.names}
         self.stats.battles += 1
         self._page = 0
+        self._blocked_slots = set()
         enemy = rank = decision = None
         reads = 0  # сколько раз пробовали прочитать противника (не больше двух ходов)
         plat_used = 0
@@ -649,15 +654,24 @@ class Bot:
             my_level = self.eyes.read_level("my")
             self.hits.attacker_level = my_level
             if switched is not None and my_name:
-                portrait, before = switched
+                portrait, before, slot = switched
                 switched = None
                 if my_name == before:
-                    # крит не сменился (окно подтверждения не нашлось или не сработало) — закрываем окно
-                    # и до конца сессии не пробуем: чужой портрет не запоминаем
+                    # крит не сменился (окно подтверждения не появилось: крит без HP, окно не успело…) — закрываем
+                    # окно, чужой портрет не запоминаем; эту ячейку до конца боя не трогаем, а совсем выключаем
+                    # смену, только если не выходит несколько раз подряд
                     self._press_key(VK_ESCAPE)
-                    self._switch_broken = True
-                    self._say("⚠ смена крита не сработала — до конца сессии без смен (проверьте «Подтвердить смену крита»)")
+                    self._blocked_slots.add(slot)
+                    self._switch_fails += 1
+                    shot = self._screenshot("switch-failed")
+                    if self._switch_fails >= SWITCH_FAILS_MAX:
+                        self._switch_broken = True
+                        self._say(f"⚠ смена крита не сработала {self._switch_fails} раза подряд — до конца сессии без смен "
+                                  f"(проверьте «Подтвердить смену крита»). Скриншот: {shot}")
+                    else:
+                        self._say(f"⚠ смена крита ({slot}) не сработала — в этом бою этого крита не трогаю. Скриншот: {shot}")
                     continue
+                self._switch_fails = 0
                 self._portraits[my_name] = portrait  # теперь знаем, чей это портрет
                 self._say(f"сменил крита: теперь {my_name}")
             target_element = enemy.element if enemy else ""
@@ -693,7 +707,7 @@ class Bot:
                     if better is not None:
                         slot, name, reason = better
                         self._say(f"меняю {my_name} на {name}: {reason}")
-                        switched = (self._switch(slot), my_name)
+                        switched = (self._switch(slot), my_name, slot)
                         last = None
                         continue
                 self._explain(enemy, rank, hp, my_name, mine, moves, target_element, decision, action, chance,
@@ -740,7 +754,7 @@ class Bot:
                     if slot is not None:
                         who = self._who_in(slot) or "незнакомого крита"
                         self._say(f"убиваем, можно поучиться: пробую {who} — по нему мало данных об уроне")
-                        switched = (self._switch(slot), my_name)
+                        switched = (self._switch(slot), my_name, slot)
                         last = None
                         continue
                 explore_switch_done = True
@@ -843,7 +857,7 @@ class Bot:
     def _team(self):
         if self._switch_broken or not self.eyes.knows("switch_confirm"):
             return []  # без подтверждения смена не пройдёт — не пробуем
-        return [slot for slot in TEAM_SLOTS if self.eyes.knows(slot)]
+        return [slot for slot in TEAM_SLOTS if self.eyes.knows(slot) and slot not in self._blocked_slots]
 
     def _portrait(self, slot):
         rect = self.eyes.region(slot)
@@ -982,6 +996,12 @@ class Bot:
         self._emit("battle_log", f"📝 записал: {move.name} → {enemy_name} ({enemy_element or '?'}): {what} "
                                  f"· видел таких ударов: {seen}")
         self._emit("hit", {"ability": move.name, "seen": seen})
+
+    def _species_named(self, name):
+        catalog = self._catalog_fn()
+        if catalog is None:
+            return None
+        return next((s for s in catalog.species if name in s.names), None)
 
     def _stats_pair(self, attacker, attacker_level, enemy, enemy_level, enemy_rank):
         return stats_pair(self._catalog_fn(), self._player_fn(), attacker, attacker_level, enemy, enemy_level,

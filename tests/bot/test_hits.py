@@ -32,17 +32,21 @@ def test_falls_back_to_general_model(tmp_path):
     assert book.estimate("Patriot", BLOW, "Fire", max_hp=100) == DamageModel().estimate("Patriot", BLOW, "Fire", 100)
 
 
-def test_growing_attacker_uses_hits_from_its_current_level():
-    book = HitBook(None, DamageModel())
-    for level, damage in ((10, 10), (10, 11), (20, 30), (20, 31)):
-        book.record("Spike", level, BLOW, "X", "Earth", 15, 80, damage)
+def test_old_hits_are_rescaled_to_the_current_level_and_evolutions_merge():
+    from miscrits_hud.catalog import Species
+
+    # один вид, две формы: Spike (до эволюции) и Magmutt (после); стихийная атака растёт по тиру Max (+3 за уровень)
+    spike = Species(7, ("Spike", "Magmutt"), "Fire", "Rare", {}, (), (("ea", "Max"), ("pa", "Max")))
+    book = HitBook(None, DamageModel(), species_of=lambda name: spike if name in spike.names else None)
+    for damage in (20, 20, 20):
+        book.record("Spike", 10, BLOW, "X", "Earth", 15, 80, damage)  # на 10 уровне
+    assert {h.attacker for h in book.hits} == {"Spike"}
     book.level = 15
     book.attacker_level = 20
-    expected, _ = book.estimate("Spike", BLOW, "Earth", max_hp=80)
-    assert 29 <= expected <= 32  # подрос — бьёт сильнее, старые удары 10-го уровня не в счёт
-    book.attacker_level = 10
-    assert 9 <= book.estimate("Spike", BLOW, "Earth", max_hp=80)[0] <= 12
-
+    expected, _ = book.estimate("Magmutt", BLOW, "Earth", max_hp=80)  # уже эволюция, 20 уровень
+    # атака на 20 уровне (10 + 3×19 = 67) против 10-го (10 + 3×9 = 37): удары стали сильнее в 67/37 раза
+    assert abs(expected - 20 * 67 / 37) < 0.5
+    assert book.observed("Magmutt", BLOW, "Earth") == 3
 
 def test_multi_hit_worst_case_has_bigger_margin():
     hurricane = Move("Hurricane", 7, 4, 95, "Wind")
