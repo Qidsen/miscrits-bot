@@ -770,7 +770,7 @@ class Bot:
                     move = choose_kill(moves, self.hits, my_name, target_element)
                     why = "самая сильная атака по ожиданию"
                 elif self._first_ability(my_name, moves) is move:
-                    why = "первая способность (лечит)"
+                    why = "атака с лечением"
                 else:
                     why = f"изучаю урон: по {move.element} → {target_element or '?'} мало данных"
                 self._explain(enemy, rank, hp, my_name, mine, moves, target_element, decision,
@@ -1013,10 +1013,15 @@ class Bot:
                           enemy_rank)
 
     def _first_ability(self, my_name, moves):
-        """Первая способность на первой странице, если это атака (у многих критов она лечит)."""
-        pages = self._pages.get(my_name) or [[]]
-        first = pages[0][0] if pages[0] else None
-        return next((m for m in moves if m.name == first), None)
+        """Атака, которая заодно лечит моего крита (по каталогу: дополнительный эффект Heal), — самая сильная
+        из таких. Раньше бралась «первая кнопка», но раскладка у разных критов разная и первая не обязательно лечит."""
+        species = self._species_named(my_name)
+        if species is None:
+            return None
+        healing = {a.get("name") for a in species.abilities
+                   if any(isinstance(x, dict) and x.get("type") == "Heal" for x in (a.get("additional") or []))}
+        candidates = [m for m in moves if m.name in healing]
+        return max(candidates, key=lambda m: m.power) if candidates else None
 
     def _save_rank_sample(self):
         """Нераспознанный значок ранга — в logs/ranks: по таким образцам доучиваем распознавание."""
