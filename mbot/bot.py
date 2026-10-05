@@ -18,6 +18,7 @@ from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, PRECIOUS_UNSEE
 from .brain.formula import owned_copy, stats_pair
 from .brain.hits import CaptureView, HitBook
 from .collection import Collection
+from .eyes import CORE_THRESHOLD, core_of
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
 from .screen import find, find_scored
@@ -1338,7 +1339,22 @@ class Bot:
         self._sleep(0.8)
         return trained
 
-    def _find_anywhere(self, image, timeout, threshold=None, near=None, clear_popups=False):
+    def _locate_step(self, snap, near=None):
+        """Кнопка шага маршрута: целиком, а если фон вокруг не тот (снимок захватил кусок локации, где учили),
+        — по её середине, без краёв."""
+        rect = find(self.eyes.image, snap.image, self.eyes.threshold, near=near) if near is not None else None
+        if rect is None:
+            rect = find(self.eyes.image, snap.image, self.eyes.threshold)
+        if rect is not None:
+            return rect
+        core, core_rect = core_of(snap)
+        found = find(self.eyes.image, core, CORE_THRESHOLD)
+        if found is None:
+            return None
+        dx, dy = core_rect[0] - snap.rect[0], core_rect[1] - snap.rect[1]
+        return found[0] - dx, found[1] - dy, snap.rect[2], snap.rect[3]
+
+    def _find_anywhere(self, image, timeout, threshold=None, near=None, clear_popups=False, snap=None):
         """Ищет картинку: сначала рядом с местом, где её показали при обучении (миллисекунды),
         потом по всему экрану (около 0,4 с на двух мониторах).
         clear_popups — закрывать по дороге известные попапы (rank up и т.п. всплывают поверх окна)."""
@@ -1353,23 +1369,29 @@ class Bot:
                     self._press(popup[1], popup[0])
                     self._sleep(0.4)
                     continue
-            rect = find(self.eyes.image, image, threshold, near=near) if near is not None else None
-            if rect is None:
-                rect = find(self.eyes.image, image, threshold)
+            if snap is not None:
+                rect = self._locate_step(snap, near)
+            else:
+                rect = find(self.eyes.image, image, threshold, near=near) if near is not None else None
+                if rect is None:
+                    rect = find(self.eyes.image, image, threshold)
             if rect is not None or time.monotonic() >= end:
                 return rect
             time.sleep(0.15)
 
     def _click_step(self, step, timeout) -> bool:
-        rect = self._find_anywhere(step.snap.image, timeout, near=step.snap.rect, clear_popups=True)
+        rect = self._find_anywhere(step.snap.image, timeout, near=step.snap.rect, clear_popups=True, snap=step.snap)
         if rect is None:
+            log.info("шаг тренировки не найден на экране: %s", step.snap.rect)
             return False
         for attempt in range(3):
             self._press(rect, "train step" + (f" (ещё раз, {attempt})" if attempt else ""))
             self._sleep(random.uniform(0.35, 0.6))
             # кнопка осталась на месте — нажатие не сработало (промах или окно ещё не ожило), жмём ещё
             self.eyes.look()
-            again = find(self.eyes.image, step.snap.image, self.eyes.threshold, near=rect)
+            again = self._locate_step(step.snap, near=rect)
+            if again is not None and abs(again[0] - rect[0]) + abs(again[1] - rect[1]) > 20:
+                again = None  # нашлась такая же кнопка в другом месте — это уже не та
             if again is None:
                 return True
             rect = again
