@@ -1083,36 +1083,47 @@ class Bot:
             self._sleep(0.5)
 
     def _use(self, ability: str, my_name: str):
-        """Нажать способность, проверяя глазами: игра сама сбрасывает страницу способностей между ходами,
-        поэтому не верим своему счётчику страниц — читаем кнопку, где должна быть способность, и если там не она,
-        определяем по надписям, какая страница открыта, листаем и проверяем снова."""
-        pages = self._pages[my_name]
-        target = next((i for i, page in enumerate(pages) if ability in page), None)
-        if target is None:
-            raise Stuck(f"не нашёл кнопку {ability}")
-        slot = ABILITY_SLOTS[pages[target].index(ability)]
+        """Нажать способность, глядя на кнопки, а не на запомненную раскладку страниц: игра сама сбрасывает
+        страницу между ходами, а у критов с малым числом способностей стрелки листают не по четыре.
+        Читаем все четыре кнопки; нужной нет — листаем и читаем снова; листание ничего не меняет (край) —
+        идём в другую сторону."""
         names = self._ability_names.get(my_name, [ability])
-        for _ in range(MAX_ABILITY_PAGES + 2):
+        pages = self._pages.get(my_name) or []
+        target = next((i for i, page in enumerate(pages) if ability in page), None)
+        direction = "ability_next" if target is not None and target > self._page else "ability_prev"
+        turned = False
+        previous = None
+        for _ in range(2 * MAX_ABILITY_PAGES + 4):
             self.eyes.look()
             if self.eyes.sees("battle") is None or any(self.eyes.sees(k) for k in ("captured", "battle_won")):
                 # бой уже кончился (поймали или победили) — не листаем способности, окно закроется дальше
                 self._say("бой уже закончился — удар не нужен")
                 return
-            if self.eyes.read_name(slot, names) == ability:
-                self._act(self.eyes.region(slot), ability)
-                self._page = target
+            seen = [self.eyes.read_name(slot, names) for slot in ABILITY_SLOTS]
+            if ability in seen:
+                self._act(self.eyes.region(ABILITY_SLOTS[seen.index(ability)]), ability)
+                if target is not None:
+                    self._page = target
                 return
-            current = self._visible_page(pages, names)
-            if current is None or current == target:
-                current = self._page if self._page != target else (target + 1 if target == 0 else target - 1)
-            arrow_id = "ability_next" if target > current else "ability_prev"
-            arrow = self.eyes.sees(arrow_id)
+            if previous is not None and seen == previous:
+                if turned:
+                    break  # прошли в обе стороны до края — способности нет
+                direction = "ability_next" if direction == "ability_prev" else "ability_prev"
+                turned = True
+            previous = seen
+            arrow = self.eyes.sees(direction)
             if arrow is None:
-                raise Stuck(f"не вижу {arrow_id}")
-            self._press(arrow, arrow_id)
-            self._page = current + (1 if target > current else -1)
+                if turned:
+                    break
+                direction = "ability_next" if direction == "ability_prev" else "ability_prev"
+                turned = True
+                continue
+            self._press(arrow, direction)
             self._sleep(0.5)
-        raise Stuck(f"не нашёл кнопку {ability} — пролистал все страницы")
+        # раскладка, которую бот запомнил, не сходится с экраном — перечитаем её на следующем ходу
+        self._pages.pop(my_name, None)
+        self._page_reads.pop(my_name, None)
+        raise Stuck(f"не нашёл кнопку {ability} — пролистал в обе стороны")
 
     def _visible_page(self, pages, names):
         """Какая страница способностей сейчас открыта — по совпадению надписей на кнопках."""

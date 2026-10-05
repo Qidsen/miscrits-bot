@@ -410,3 +410,31 @@ def test_no_crit_switch_when_capture_chance_is_already_high(tmp_path):
     bot._better_catcher = lambda *a: ("team_1", "Other", "есть безопасный удар")
     bot._battle()
     assert switches == [] and bot.stats.captures == 1
+
+
+def test_use_finds_ability_on_any_button_and_turns_back_at_the_edge(tmp_path):
+    """Раскладка сдвинута относительно запомненной; сначала листаем не туда — упираемся в край и разворачиваемся."""
+    eyes = FakeEyes([{"see": {"battle", "my_turn", "ability_next", "ability_prev"}}])
+    view = {"page": 1}
+    layouts = {0: ["Sleep", "Bite", "Debaser", "Burn"], 1: ["Bite", "Debaser", "Burn", "Ember"]}
+
+    def read_name(element_id, names):
+        slots = ("ability_1", "ability_2", "ability_3", "ability_4")
+        return layouts[view["page"]][slots.index(element_id)] if element_id in slots else None
+    eyes.read_name = read_name
+    bot, clicks = make_bot(eyes, tmp_path)
+    bot._pages["Blazertooth"] = [["Bite", "Debaser", "Burn", None]]
+    bot._ability_names["Blazertooth"] = ["Sleep", "Bite", "Debaser", "Burn", "Ember"]
+
+    def press(rect, what=""):
+        if what == "ability_prev":
+            view["page"] = 0
+        elif what == "ability_next":
+            view["page"] = 1
+        clicks.append((what, rect))
+    bot._press = press
+    bot._act = lambda rect, what="": clicks.append((what, rect))
+    bot._use("Sleep", "Blazertooth")  # Sleep только на «первой» раскладке
+    assert clicks[-1][0] == "Sleep"
+    bot._use("Ember", "Blazertooth")  # Ember только на второй
+    assert clicks[-1][0] == "Ember"
