@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         self.region_corner = None
 
         self.setting_widgets = {}
-        self._tesseract_checked = {}  # путь к tesseract -> найден ли
+        self._tesseract_found = set()  # пути, по которым tesseract точно есть
         self._save_timer = QTimer(self)  # на диск пишем, когда пользователь перестал крутить значение
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(lambda: save_settings(self.settings_path, self.settings))
@@ -377,11 +377,12 @@ class MainWindow(QMainWindow):
         return problems
 
     def _tesseract_ok(self) -> bool:
-        """Проверка Tesseract запускает его как отдельную программу — делаем это один раз на каждый путь."""
+        """Проверка Tesseract запускает его как отдельную программу — найденный путь запоминаем,
+        ненайденный проверяем заново (вдруг его установили, не закрывая бота)."""
         cmd = self.settings.tesseract_cmd
-        if cmd not in self._tesseract_checked:
-            self._tesseract_checked[cmd] = Ocr(cmd).available()
-        return self._tesseract_checked[cmd]
+        if cmd not in self._tesseract_found and Ocr(cmd).available():
+            self._tesseract_found.add(cmd)
+        return cmd in self._tesseract_found
 
     def _on_start(self):
         if self.bot and self.bot.running:
