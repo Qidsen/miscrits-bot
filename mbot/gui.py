@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QTabWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem, QStackedWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -38,57 +38,20 @@ from .brain.hits import HitBook
 from .damage_report import attackers, evolution_name, groups, recent
 from .ranks import RANKS, RankBook, unknown_samples
 from .worldmap import Companion, Locator, view_rect
+from . import ui_kit
+from .settings_meta import CATEGORIES
 from .storage import BUTTON, ELEMENTS, REGION, ROUTES, Snapshot, Step, save_teaching
 
 log = logging.getLogger(__name__)
 
-HK_CAPTURE, HK_PAUSE, HK_STOP = 101, 102, 103
-VK_F4, VK_F6, VK_F7 = 0x73, 0x75, 0x76
-
-SETTING_LABELS = {
-    "delay_min": "Пауза перед кликом от, с",
-    "delay_max": "Пауза перед кликом до, с",
-    "break_every_min": "Перерыв каждые от, мин",
-    "break_every_max": "Перерыв каждые до, мин",
-    "break_len_min": "Длина перерыва от, мин",
-    "break_len_max": "Длина перерыва до, мин",
-    "session_limit_min": "Лимит сессии, мин (0 — без лимита)",
-    "kill_with_first": "Добивать атакой с лечением, если она есть",
-    "explore_damage": "Изучать урон в обычных боях (пробовать разные атаки)",
-    "explore_switch": "Пробовать других критов команды в обычных боях",
-    "explore_enough": "Атака изучена после стольких ударов по одной стихии",
-    "explore_switch_pct": "Пробовать другого крита в стольких % боёв «на убой»",
-    "low_hp_switch_pct": "Менять крита в бою «на убой», если у него HP ниже, %",
-    "test_min_hp_pct": "Выпускать на проверки критов с HP не ниже, %",
-    "level_gap": "Крит может быть ниже противника не больше чем на (уровней)",
-    "spot_cooldown": "Кулдаун точки поиска (с момента клика), с",
-    "heal_below": "Идти лечиться, если HP ниже, %",
-    "plat_capture_limit": "Платиновых попыток за бой (Exotic/Legendary)",
-    "capture_min_chance": "Ловить сразу, если шанс поимки не ниже, %",
-    "capture_hp_floor": "Перед поимкой подводить HP цели до",
-    "train_every": "Тренировка каждые N боёв (если «Есть кого тренировать» не обучено; 0 — нет)",
-    "match_threshold": "Точность совпадения картинок (0.5–0.99)",
-    "button_size": "Размер снимка кнопки по F4, px",
-    "tesseract_cmd": "Путь к tesseract.exe",
-}
-
+HK_CAPTURE, HK_PAUSE, HK_STOP, HK_START = 101, 102, 103, 104
+VK_F4, VK_F5, VK_F6, VK_F7 = 0x73, 0x74, 0x75, 0x76
 
 def to_pixmap(image, max_w=160, max_h=60) -> QPixmap:
     rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     h, w = rgb.shape[:2]
     qimage = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
     return QPixmap.fromImage(qimage).scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-
-
-SETTING_GROUPS = (
-    ("Поведение и перерывы", ("delay_min", "delay_max", "break_every_min", "break_every_max",
-                              "break_len_min", "break_len_max", "session_limit_min")),
-    ("Охота и бой", ("spot_cooldown", "kill_with_first", "capture_hp_floor", "capture_min_chance", "plat_capture_limit",
-                     "heal_below", "train_every")),
-    ("Проверки урона и команда", ("explore_damage", "explore_enough", "explore_switch", "explore_switch_pct",
-                                  "low_hp_switch_pct", "test_min_hp_pct", "level_gap")),
-    ("Распознавание", ("match_threshold", "button_size", "tesseract_cmd")),
-)
 
 
 def game_rect_on_image():
@@ -133,7 +96,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Miscrits Bot")
         theme.style_window(self)
-        self.resize(980, 720)
+        self.resize(1180, 780)
         self.hud = hud
         self.teaching = teaching
         self.teaching_path = teaching_path
@@ -152,19 +115,34 @@ class MainWindow(QMainWindow):
         self.capture_mode = None  # ("element", id) | ("spot",) | ("route", имя)
         self.region_corner = None
 
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
-        for widget, title in ((self._bot_tab(), "▶  Бот"), (self._hunt_tab(), "🎯  Охота"),
-                              (self._teach_tab(), "🎓  Обучение"), (self._ranks_tab(), "🏅  Ранги"), (self._damage_tab(), "💥  Урон"), (self._routes_tab(), "📍  Точки и маршруты"),
-                              (self._settings_tab(), "⚙  Настройки"), (self._log_tab(), "📜  Журнал")):
-            tabs.addTab(widget, title)
+        self.setting_widgets = {}
+        sections = (
+            ("Работа", (("🕹", "Бот", "bot", self._bot_tab), ("🎯", "Охота", "hunt", self._hunt_tab))),
+            ("Знания", (("💥", "Урон", "damage", self._damage_tab), ("🏅", "Ранги", "ranks", self._ranks_tab))),
+            ("Подготовка", (("🎓", "Обучение", "teach", self._teach_tab),
+                            ("📍", "Точки и маршруты", "routes", self._routes_tab))),
+            ("Система", (("⚙", "Настройки", "settings", self._settings_tab), ("📜", "Журнал", "log", self._log_tab))),
+        )
+        stack = QStackedWidget()
+        index = {}
+        for _, pages in sections:
+            for _, _, key, build in pages:
+                index[key] = stack.addWidget(build())
+        self.sidebar = ui_kit.Sidebar([(t, [(i, n, k) for i, n, k, _ in pages]) for t, pages in sections])
+        self.sidebar.page_selected.connect(lambda key: stack.setCurrentIndex(index[key]))
+        self.sidebar.select("bot")
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self.sidebar)
+        body.addWidget(stack, 1)
         page = QWidget()
         page.setObjectName("page")
         root = QVBoxLayout(page)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._header())
-        root.addWidget(tabs, 1)
+        root.addLayout(body, 1)
         self.setCentralWidget(page)
 
         self.timer = QTimer(self)
@@ -177,19 +155,19 @@ class MainWindow(QMainWindow):
 
     def register_hotkeys(self):
         hwnd = int(self.winId())
-        for hotkey_id, vk in ((HK_CAPTURE, VK_F4), (HK_PAUSE, VK_F6), (HK_STOP, VK_F7)):
+        for hotkey_id, vk in ((HK_CAPTURE, VK_F4), (HK_START, VK_F5), (HK_PAUSE, VK_F6), (HK_STOP, VK_F7)):
             if not hotkeys.register(hwnd, hotkey_id, 0, vk):
                 log.warning("hotkey %s is taken by another program", hotkey_id)
 
     def unregister_hotkeys(self):
         hwnd = int(self.winId())
-        for hotkey_id in (HK_CAPTURE, HK_PAUSE, HK_STOP):
+        for hotkey_id in (HK_CAPTURE, HK_START, HK_PAUSE, HK_STOP):
             hotkeys.unregister(hwnd, hotkey_id)
 
     def nativeEvent(self, event_type, message):
         msg = wintypes.MSG.from_address(int(message))
         if msg.message == hotkeys.WM_HOTKEY:
-            {HK_CAPTURE: self._on_f4, HK_PAUSE: self._on_pause, HK_STOP: self._on_stop}.get(int(msg.wParam), lambda: None)()
+            {HK_CAPTURE: self._on_f4, HK_START: self._on_start, HK_PAUSE: self._on_pause, HK_STOP: self._on_stop}.get(int(msg.wParam), lambda: None)()
             return True, 0
         return super().nativeEvent(event_type, message)
 
@@ -213,7 +191,7 @@ class MainWindow(QMainWindow):
         titles.addWidget(subtitle)
         row.addLayout(titles)
         row.addStretch(1)
-        hotkeys_hint = QLabel("F6 пауза · F7 стоп · F4 снять · мышь в угол — аварийный стоп")
+        hotkeys_hint = QLabel("F5 старт · F6 пауза · F7 стоп · F4 снять · мышь в угол — аварийный стоп")
         hotkeys_hint.setObjectName("appSubtitle")
         row.addWidget(hotkeys_hint)
         row.addSpacing(16)
@@ -260,11 +238,11 @@ class MainWindow(QMainWindow):
         state_box.addWidget(self.status)
         state_box.addWidget(self.substatus)
         top.addLayout(state_box, 1)
-        self.start_btn = QPushButton("▶  Старт")
+        self.start_btn = QPushButton("▶  Старт  (F5)")
         self.start_btn.setObjectName("start")
-        self.pause_btn = QPushButton("❚❚  Пауза")
+        self.pause_btn = QPushButton("❚❚  Пауза  (F6)")
         self.pause_btn.setObjectName("pause")
-        self.stop_btn = QPushButton("■  Стоп")
+        self.stop_btn = QPushButton("■  Стоп  (F7)")
         self.stop_btn.setObjectName("stop")
         for b in (self.start_btn, self.pause_btn, self.stop_btn):
             b.setMinimumSize(130, 46)
@@ -1395,70 +1373,89 @@ class MainWindow(QMainWindow):
     # ---------- вкладка «Настройки» ----------
 
     def _settings_tab(self) -> QWidget:
+        """Категории слева, настройки выбранной справа. Каждое изменение сразу сохраняется и действует."""
+        w = QWidget()
+        w.setObjectName("page")
+        h = QHBoxLayout(w)
+        h.setContentsMargins(24, 20, 24, 20)
+        h.setSpacing(20)
+        cats = QListWidget()
+        cats.setObjectName("categories")
+        cats.setFixedWidth(230)
+        cats.setFocusPolicy(Qt.NoFocus)
+        pages = QStackedWidget()
+        for category in CATEGORIES:
+            item = QListWidgetItem(f"{category.icon}   {category.title}")
+            item.setSizeHint(QSize(210, 44))
+            cats.addItem(item)
+            pages.addWidget(self._settings_page(category))
+        cats.currentRowChanged.connect(pages.setCurrentIndex)
+        cats.setCurrentRow(0)
+        h.addWidget(cats)
+        h.addWidget(pages, 1)
+        return w
+
+    def _settings_page(self, category) -> QWidget:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         w = QWidget()
         w.setObjectName("page")
         v = QVBoxLayout(w)
-        v.setContentsMargins(20, 16, 20, 16)
-        v.setSpacing(14)
-        self.setting_widgets = {}
-        values = {f.name: getattr(self.settings, f.name) for f in fields(Settings)}
-        for title, names in SETTING_GROUPS:
-            box = QGroupBox(title)
-            form = QFormLayout(box)
-            form.setHorizontalSpacing(24)
-            form.setVerticalSpacing(10)
-            form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            for name in names:
-                value = values[name]
-                if isinstance(value, bool):
-                    widget = QCheckBox()
-                    widget.setChecked(value)
-                elif isinstance(value, int):
-                    widget = QSpinBox()
-                    widget.setRange(0, 100000)
-                    widget.setValue(value)
-                elif isinstance(value, float):
-                    widget = QDoubleSpinBox()
-                    widget.setRange(0, 1000)
-                    widget.setDecimals(2)
-                    widget.setSingleStep(0.05)
-                    widget.setValue(value)
-                else:
-                    widget = QLineEdit(str(value))
-                if isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                    widget.setButtonSymbols(QSpinBox.NoButtons)
-                    widget.setFixedWidth(120)
-                    widget.setAlignment(Qt.AlignRight)
-                self.setting_widgets[name] = widget
-                form.addRow(SETTING_LABELS.get(name, name), widget)
-            v.addWidget(box)
-        row = QHBoxLayout()
-        row.addWidget(_hint("Изменения применяются при следующем старте бота."), 1)
-        save = _primary("Сохранить")
-        save.setMinimumWidth(180)
-        save.clicked.connect(self._save_settings)
-        row.addWidget(save)
-        v.addLayout(row)
+        v.setContentsMargins(0, 0, 8, 0)
+        v.setSpacing(4)
+        top = QHBoxLayout()
+        title = QLabel(f"{category.icon}  {category.title}")
+        title.setObjectName("pageTitle")
+        top.addWidget(title)
+        top.addStretch(1)
+        saved = QLabel("")
+        saved.setObjectName("savedMark")
+        top.addWidget(saved)
+        v.addLayout(top)
+        v.addWidget(_hint(category.hint))
+        v.addSpacing(12)
+        box = QFrame()
+        box.setObjectName("settingsBox")
+        rows = QVBoxLayout(box)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(0)
+        for i, field in enumerate(category.fields):
+            if i:
+                line = QFrame()
+                line.setObjectName("rowLine")
+                line.setFixedHeight(1)
+                rows.addWidget(line)
+            control = ui_kit.setting_control(getattr(self.settings, field.name), field,
+                                             lambda value, name=field.name, mark=saved: self._setting_changed(name, value, mark))
+            self.setting_widgets[field.name] = control
+            rows.addWidget(ui_kit.setting_row(field, control))
+        v.addWidget(box)
         v.addStretch(1)
         scroll.setWidget(w)
         return scroll
 
-    def _save_settings(self):
-        for name, widget in self.setting_widgets.items():
-            if isinstance(widget, QCheckBox):
-                value = widget.isChecked()
-            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
-                value = widget.value()
-            else:
-                value = widget.text()
-            setattr(self.settings, name, value)
-        if self.settings.delay_max < self.settings.delay_min:
-            self.settings.delay_max = self.settings.delay_min
+    def _setting_changed(self, name, value, mark):
+        setattr(self.settings, name, value)
+        # «до» не меньше «от»: подтягиваем парное поле
+        for low, high in (("delay_min", "delay_max"), ("break_every_min", "break_every_max"),
+                          ("break_len_min", "break_len_max")):
+            if getattr(self.settings, high) < getattr(self.settings, low):
+                other = high if name == low else low
+                setattr(self.settings, other, value)
+                widget = self.setting_widgets.get(other)
+                if widget is not None:
+                    widget.blockSignals(True)
+                    widget.setValue(value)
+                    widget.blockSignals(False)
         save_settings(self.settings_path, self.settings)
         self._refresh_checks()
-        QMessageBox.information(self, "Настройки", "Сохранено.")
+        mark.setText("✓ Сохранено")
+        timer = getattr(mark, "_timer", None)
+        if timer is None:
+            timer = mark._timer = QTimer(mark)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: mark.setText(""))
+        timer.start(1800)
 
     # ---------- вкладка «Журнал» ----------
 

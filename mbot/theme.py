@@ -34,6 +34,31 @@ QLabel#appTitle {{ font-size: 20px; font-weight: 800; color: {TEXT}; }}
 QLabel#appSubtitle {{ color: {MUTED}; }}
 QLabel#statusPill {{ border-radius: 14px; padding: 5px 14px; font-weight: 700; }}
 
+QListWidget#sidebar {{ background: {SURFACE}; border: none; border-right: 1px solid {BORDER}; border-radius: 0;
+    padding: 10px 10px; outline: 0; }}
+QListWidget#sidebar::item {{ color: {MUTED}; padding: 6px 12px; margin: 1px 0; border-radius: 9px; font-size: 14px;
+    font-weight: 600; }}
+QListWidget#sidebar::item:disabled {{ color: #5d6579; font-size: 11px; font-weight: 700; padding: 16px 12px 4px 12px; }}
+QListWidget#sidebar::item:hover:!selected:enabled {{ background: {SURFACE_2}; color: {TEXT}; }}
+QListWidget#sidebar::item:selected {{ background: #2a2615; color: {ACCENT}; border-left: 3px solid {ACCENT}; }}
+
+QListWidget#categories {{ background: transparent; border: none; outline: 0; }}
+QListWidget#categories::item {{ color: {MUTED}; padding: 6px 14px; margin: 2px 0; border-radius: 10px; font-size: 14px;
+    font-weight: 600; }}
+QListWidget#categories::item:hover:!selected {{ background: {SURFACE}; color: {TEXT}; }}
+QListWidget#categories::item:selected {{ background: {SURFACE}; color: {ACCENT}; border: 1px solid {BORDER}; }}
+
+QLabel#pageTitle {{ font-size: 22px; font-weight: 800; color: {TEXT}; }}
+QLabel#savedMark {{ color: {GREEN}; font-weight: 700; }}
+QFrame#settingsBox {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 14px; }}
+QFrame#settingRow {{ background: transparent; border: none; }}
+QFrame#settingRow:hover {{ background: #1b2030; border-radius: 14px; }}
+QFrame#rowLine {{ background: {BORDER}; border: none; margin: 0 18px; }}
+QLabel#settingTitle {{ font-size: 14px; font-weight: 600; color: {TEXT}; background: transparent; }}
+QLabel#settingHint {{ color: {MUTED}; font-size: 12px; background: transparent; }}
+QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    width: 18px; border: none; background: transparent; }}
+
 QTabWidget::pane {{ border: none; background: {BG}; top: -1px; }}
 QTabBar {{ background: {SURFACE}; }}
 QTabBar::tab {{ background: transparent; color: {MUTED}; padding: 10px 18px; border: none;
