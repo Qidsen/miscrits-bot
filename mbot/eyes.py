@@ -127,6 +127,14 @@ def camera_shift(image, location, anchors) -> tuple | None:
 
 
 BANNER_ELEMENTS = ("capture", "plat_capture")
+CORE_THRESHOLD = 0.88
+
+
+def core_of(snap):
+    """Середина снимка кнопки (курсор при обучении стоял на ней) — без фона по краям."""
+    x, y, w, h = snap.rect
+    top, bottom, left, right = int(h * 0.32), int(h * 0.68), int(w * 0.2), int(w * 0.8)
+    return snap.image[top:bottom, left:right], (x + left, y + top, right - left, bottom - top)
 BANNER_THRESHOLD = 0.9
 
 
@@ -198,7 +206,16 @@ class Eyes:
             # в снимок кнопки поимки попадают процент шанса и фон — они меняются; ищем только саму плашку
             banner, near = banner_of(snap)
             return find(self.image, banner, BANNER_THRESHOLD, near=near)
-        return find(self.image, snap.image, self.threshold, near=snap.rect)
+        found = find(self.image, snap.image, self.threshold, near=snap.rect)
+        if found is None:
+            # в снимок попал фон вокруг кнопки (на другой локации он другой) — ищем середину, где сама кнопка
+            core, near = core_of(snap)
+            found = find(self.image, core, CORE_THRESHOLD, near=near)
+            if found is not None:
+                x, y, w, h = found
+                dx, dy = near[0] - snap.rect[0], near[1] - snap.rect[1]
+                found = (x - dx, y - dy, snap.rect[2], snap.rect[3])  # прямоугольник всей кнопки — клик по центру
+        return found
 
     def sees_snap(self, snap, threshold=None, anywhere=False):
         return find(self.image, snap.image, threshold or self.threshold, near=None if anywhere else snap.rect)

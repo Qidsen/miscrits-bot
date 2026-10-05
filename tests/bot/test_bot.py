@@ -108,7 +108,7 @@ def make_bot(eyes, tmp_path, player=None):
 
 def test_kill_battle_uses_strongest_attack(tmp_path):
     turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
-    eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
+    eyes = FakeEyes([turn, turn, turn, turn, {"see": {"battle_won"}}, {"see": set()}])
     owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])  # Flue S+ уже есть
     bot, clicks = make_bot(eyes, tmp_path, owned)
     bot._battle()
@@ -197,7 +197,7 @@ def test_missed_spot_is_clicked_again(tmp_path):
 
 def test_kill_uses_strongest_when_first_ability_disabled(tmp_path):
     turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
-    eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
+    eyes = FakeEyes([turn, turn, turn, turn, {"see": {"battle_won"}}, {"see": set()}])
     owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
     bot, clicks = make_bot(eyes, tmp_path, owned)
     bot.settings.kill_with_first = False
@@ -395,3 +395,18 @@ def test_finishing_blow_recorded_when_battle_screen_vanishes_before_victory(tmp_
     bot.settings.explore_damage = False
     bot._battle()
     assert [h.kill for h in bot.hits.hits] == [True]
+
+
+def test_no_crit_switch_when_capture_chance_is_already_high(tmp_path):
+    turn = {"see": {"battle", "my_turn", "capture"}, "enemy_hp": (45, 136), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn] * 3 + [{"see": {"captured"}}, {"see": set()}], enemy="Goldy")
+    eyes.read_percent = lambda element_id: 100
+    eyes.teaching.elements["capture_chance"] = Snapshot((0, 0, 10, 10))
+    eyes.teaching.elements["team_1"] = Snapshot((500, 0, 10, 10))
+    eyes.teaching.elements["switch_confirm"] = Snapshot((600, 0, 10, 10))
+    bot, clicks = make_bot(eyes, tmp_path)
+    switches = []
+    bot._switch = lambda slot: switches.append(slot)
+    bot._better_catcher = lambda *a: ("team_1", "Other", "есть безопасный удар")
+    bot._battle()
+    assert switches == [] and bot.stats.captures == 1

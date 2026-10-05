@@ -55,6 +55,7 @@ def safe_stall(species, names) -> list:
     # сначала то, что на себя (баффы, лечение, блок), — меньше всего риска
     return sorted(out, key=lambda n: (by_name[n].get("target") != "Self", n))
 PAGE_READ_TRIES = 3  # столько раз перечитываем страницы способностей, если на них остались «?»
+ACTION_LEAVE_WAIT = 6.0  # с: столько ждём, пока после нашего действия «мой ход» сменится чужим
 LIGHT_BUTTONS_AFTER = 4.0  # с: столько ждём обученный «Мой ход», прежде чем верить светлым кнопкам
 MY_TURN_STRICT = 0.93  # картинка «Мой ход» — строгий порог: в строке сообщений любой текст похож на любой
 EXPLORE_SWITCH_CHANCE = 0.3  # доля боёв «на убой», в которых пробуем другого крита команды
@@ -109,6 +110,7 @@ class Bot:
         self.eyes = eyes
         self._press_key = press_key  # подменяется в тестах: настоящие нажатия клавиш там не нужны
         self._move_mouse = None  # (x, y) на скриншоте -> подвести курсор; задаёт окно программы
+        self._acted = False  # только что сделали боевое действие — следующий «мой ход» ждём после чужого
         self._location_fn = location_fn
         self._companion = companion
         self._game_rect_fn = game_rect_fn
@@ -221,6 +223,11 @@ class Bot:
         while time.monotonic() < end:
             self._checkpoint()
             time.sleep(min(0.1, max(end - time.monotonic(), 0)))
+
+    def _act(self, rect, what: str = ""):
+        """Боевое действие (удар, поимка, смена крита): после него ждём конца своего хода."""
+        self._press(rect, what)
+        self._acted = True
 
     def _press(self, rect, what: str = ""):
         self._sleep(random.uniform(self.settings.delay_min, self.settings.delay_max))
@@ -439,17 +446,25 @@ class Bot:
         return (x, y, w, h), self.eyes.image[y:y + h, x:x + w]
 
     def _where(self, location):
-        """Где сейчас экран на карте локации: (обзор, Placement)."""
-        locator = self._locators.get(location)
+        """Где сейчас экран на карте локации: (обзор, Placement).
+        Зоны одной локации нарисованы на карте сайта в разном масштабе (у Mansion: улица 0.375, чердак 0.40),
+        поэтому масштаб — свой у каждой зоны; не нашли себя с известным масштабом — подбираем его заново."""
+        key = self._scale_key(location)
+        locator = self._locators.get(key)
+        world = self._companion.map_image(location)
+        if world is None:
+            raise Stuck(f"нет карты локации {location}")
         if locator is None:
-            world = self._companion.map_image(location)
-            if world is None:
-                raise Stuck(f"нет карты локации {location}")
-            locator = self._locators[location] = Locator(world, scale=self._map_scales().get(self._scale_key(location)))
+            locator = self._locators[key] = Locator(world, scale=self._map_scales().get(key))
         self.eyes.look()
         rect, view = self._view()
         known = locator.scale
         place = locator.locate(view)
+        if place is None and known is not None:
+            self._state("подбираю масштаб карты для этой зоны…")
+            locator = self._locators[key] = Locator(world)
+            known = None
+            place = locator.locate(view)
         if place is None:
             raise Stuck("не нашёл себя на карте локации")
         if known is None:
@@ -465,7 +480,9 @@ class Bot:
 
     def _scale_key(self, location):
         game = self._game_rect_fn() if self._game_rect_fn else None
-        return f"{location}|{game[2]}x{game[3]}" if game else location
+        where = self._location_fn() if self._location_fn else None
+        zone = where[1] if where and where[0] == location else "?"
+        return f"{location}|{zone}|{game[2]}x{game[3]}" if game else f"{location}|{zone}"
 
     def _map_scales(self) -> dict:
         try:
@@ -666,7 +683,10 @@ class Bot:
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
                                         self.settings.capture_min_chance, (can_capture or plat) is not None,
                                         precious=precious, floor=self.settings.capture_hp_floor)
-                if action.kind in (CAPTURE, STALL) and hp and hp[0] - self.settings.capture_hp_floor > SWITCH_FAR * hp[1]:
+                high_chance = chance is not None and chance >= self.settings.capture_min_chance
+                if (action.kind in (CAPTURE, STALL) and not high_chance and hp
+                        and hp[0] - self.settings.capture_hp_floor > SWITCH_FAR * hp[1]):
+                    # ловить приходится не от хорошего шанса, а потому что бить нечем, — может, другой крит подведёт
                     # у текущего крита нет удара, безопасно приближающего цель к порогу, а до порога далеко —
                     # ищем в команде того, у кого такой удар есть
                     better = self._better_catcher(my_name, by_name, target_element, hp, precious)
@@ -680,11 +700,11 @@ class Bot:
                               precious)
                 if action.kind == CAPTURE:
                     if can_capture is not None:
-                        self._press(can_capture, "capture")
+                        self._act(can_capture, "capture")
                         self._say(f"пробую поймать (шанс {chance if chance is not None else '?'}%)")
                     else:
                         plat_used += 1
-                        self._press(plat, "plat_capture")
+                        self._act(plat, "plat_capture")
                         self._say(f"платиновая поимка {plat_used}/{self.settings.plat_capture_limit}")
                     last = None
                     self._sleep(2.5)
@@ -767,6 +787,20 @@ class Bot:
         end = start + 60
         gone = 0
         shot_taken = False
+        if self._acted:
+            # только что сходили: строка «It's your turn!» и светлые кнопки ещё видны, пока идёт анимация
+            # (так бот однажды ударил сразу после Capture) — ждём, пока наш ход действительно закончится
+            self._acted = False
+            leave = start + ACTION_LEAVE_WAIT
+            while time.monotonic() < leave:
+                self._checkpoint()
+                self.eyes.look()
+                for done in ("battle_won", "captured"):
+                    if self.eyes.sees(done) is not None:
+                        return done
+                if self.eyes.sees("battle") is None or not self._is_my_turn(float("inf")):
+                    break
+                time.sleep(0.25)
         while time.monotonic() < end:
             if not shot_taken and time.monotonic() - start > 10:
                 # долго не узнаём свой ход — сохраним, как выглядит экран: по нему правится распознавание
@@ -832,7 +866,7 @@ class Bot:
         """Клик по портрету + подтверждение. Ход тратится — результат увидим на следующем ходу.
         Возвращает картинку портрета, чтобы потом запомнить, чей он."""
         portrait = self._portrait(slot)
-        self._press(self.eyes.region(slot), f"смена крита ({slot})")
+        self._act(self.eyes.region(slot), f"смена крита ({slot})")
         if self.eyes.knows("switch_confirm"):
             found, rect = self._wait_for(("switch_confirm",), timeout=6)
             if rect is not None:
@@ -1035,8 +1069,12 @@ class Bot:
         names = self._ability_names.get(my_name, [ability])
         for _ in range(MAX_ABILITY_PAGES + 2):
             self.eyes.look()
+            if self.eyes.sees("battle") is None or any(self.eyes.sees(k) for k in ("captured", "battle_won")):
+                # бой уже кончился (поймали или победили) — не листаем способности, окно закроется дальше
+                self._say("бой уже закончился — удар не нужен")
+                return
             if self.eyes.read_name(slot, names) == ability:
-                self._press(self.eyes.region(slot), ability)
+                self._act(self.eyes.region(slot), ability)
                 self._page = target
                 return
             current = self._visible_page(pages, names)
