@@ -20,7 +20,7 @@ from .brain.hits import CaptureView, HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
-from .screen import find
+from .screen import find, find_scored
 from .storage import ABILITY_SLOTS, POPUPS, TEAM_SLOTS
 from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
 
@@ -63,6 +63,7 @@ SWITCH_FAR = 0.15  # смена ради поимки — только если 
 BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
 SUMMARY_MAX_WAIT = 2.0  # с: дольше анимация опыта в сводке не идёт
 SUMMARY_STILL = 12  # изменившихся пикселей (в уменьшенном кадре), меньше которых сводка неподвижна
+SUMMARY_SHOTS = 60  # столько последних снимков сводки храним в logs/summary
 
 
 def ready_label_of(row):
@@ -1231,20 +1232,42 @@ class Bot:
         threshold = max(self.eyes.threshold, 0.8)
         area = self._summary_area()
         previous = None
-        end = time.monotonic() + SUMMARY_MAX_WAIT
+        best = 0.0
+        frames = 0
+        start = time.monotonic()
+        end = start + SUMMARY_MAX_WAIT
         while True:
             self.eyes.look()
-            if find(self.eyes.image, label, threshold) is not None:
-                return True
+            frames += 1
+            _, score = find_scored(self.eyes.image, label)
+            best = max(best, score)
+            if score >= threshold:
+                return self._summary_verdict(True, best, frames, start, "метка найдена", area)
             current = cv2.resize(crop_area(self.eyes.image, area), None, fx=0.25, fy=0.25,
                                  interpolation=cv2.INTER_AREA).astype(np.int16)
             # анимируется маленькая полоска опыта — считаем изменившиеся пиксели, а не среднюю разницу
-            if previous is not None and int((np.abs(current - previous).max(axis=2) > 30).sum()) < SUMMARY_STILL:
-                return False
+            if previous is not None:
+                changed = int((np.abs(current - previous).max(axis=2) > 30).sum())
+                if changed < SUMMARY_STILL:
+                    return self._summary_verdict(False, best, frames, start, f"сводка не меняется ({changed} px)", area)
             if time.monotonic() >= end:
-                return False
+                return self._summary_verdict(False, best, frames, start, "время вышло", area)
             previous = current
             time.sleep(0.15)
+
+    def _summary_verdict(self, ready, best, frames, start, why, area):
+        """Пишем в лог, что решили по сводке и почему, и сохраняем её снимок — чтобы разбирать пропуски."""
+        log.info("сводка: %s (совпадение с READY TO TRAIN %.2f, кадров %d, %.1f с, %s)",
+                 "есть кого тренировать" if ready else "тренировать некого", best, frames,
+                 time.monotonic() - start, why)
+        folder = self._logs_dir / "summary"
+        folder.mkdir(parents=True, exist_ok=True)
+        ok, buf = cv2.imencode(".jpg", crop_area(self.eyes.image, area), [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            (folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{'yes' if ready else 'no'}-{best:.2f}.jpg").write_bytes(buf.tobytes())
+        for old in sorted(folder.glob("*.jpg"))[:-SUMMARY_SHOTS]:
+            old.unlink(missing_ok=True)
+        return ready
 
     def _summary_area(self):
         """Где на экране сводка: вокруг обученной полосы READY TO TRAIN и кнопки Continue."""
