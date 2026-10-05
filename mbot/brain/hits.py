@@ -144,8 +144,11 @@ class HitBook:
 
     def _same(self, attacker, move, target_element):
         """Удары по цели этой стихии: сначала этой же атакой; если ею ещё не били — атаками той же стихии
-        с тем же числом ударов (Cinders 1×7 и The Big Finale 4×7 обе Fire, но бьют по-разному)."""
-        base = [h for h in self.hits if h.damage > 0 and h.attacker == attacker and h.enemy_element == target_element]
+        с тем же числом ударов (Cinders 1×7 и The Big Finale 4×7 обе Fire, но бьют по-разному).
+        Физическим атакам стихия цели безразлична — для них годятся удары по любой стихии."""
+        physical = move.element == "Physical"
+        base = [h for h in self.hits if h.damage > 0 and h.attacker == attacker
+                and (physical or h.enemy_element == target_element)]
         exact = [h for h in base if h.ability == move.name]
         if exact:
             return exact

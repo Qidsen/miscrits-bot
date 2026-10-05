@@ -88,3 +88,15 @@ def test_forecast_uses_the_same_ability_not_just_the_element():
         book.record("Patriot", 35, cinders, "Elefauna", "Nature", 15, 80, damage)
     expected, _ = book.estimate("Patriot", cinders, "Nature", max_hp=80)
     assert 19 <= expected <= 23
+
+
+def test_physical_hits_count_against_any_element():
+    # Mush физическая: удары по Fire и Water — данные и для Keeper (NatureEarth)
+    mush = Move("Mush", 15, 1, 100, "Physical")
+    cinders = Move("Cinders", 7, 1, 100, "Fire")
+    book = HitBook(None, DamageModel())
+    book.record("Patriot", 35, mush, "Flameling", "Fire", 15, 67, 50)
+    book.record("Patriot", 35, mush, "Bubbles", "Water", 15, 77, 56)
+    book.record("Patriot", 35, cinders, "Flameling", "Fire", 15, 67, 20)
+    assert book.observed("Patriot", mush, "NatureEarth") == 2
+    assert book.observed("Patriot", cinders, "NatureEarth") == 0  # стихийной — только по той же стихии
