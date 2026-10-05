@@ -126,6 +126,18 @@ class Ocr:
                 return value
         return None
 
+    def read_all(self, image: np.ndarray, parse, whitelist: str | None = None, enough: int = 3) -> list:
+        """Значения parse([текст]), которые не None, — по одному от каждого способа распознавания.
+        Останавливаемся, когда одно значение набрало enough голосов: дальше читать незачем."""
+        values = []
+        for text in self._variants(image, whitelist):
+            value = parse([text])
+            if value is not None:
+                values.append(value)
+                if values.count(value) >= enough:
+                    break
+        return values
+
     def text(self, image: np.ndarray, whitelist: str | None = None) -> list:
         """Все варианты распознанного текста (для проверки экрана и старых вызовов)."""
         return list(self._variants(image, whitelist))
@@ -266,6 +278,38 @@ def parse_hp(texts) -> tuple | None:
         if m and 0 <= int(m.group(1)) <= int(m.group(2)) > 0:
             return int(m.group(1)), int(m.group(2))
     return None
+
+
+def hp_bar_ratio(image: np.ndarray) -> float | None:
+    """Насколько заполнена полоска HP в снимке области HP (цифры стоят справа внизу, поэтому меряем
+    по строке над ними): доля столбцов с яркой насыщенной заливкой. None — полоски не видно."""
+    h, w = image.shape[:2]
+    hsv = cv2.cvtColor(image[int(h * 0.3):int(h * 0.45)], cv2.COLOR_BGR2HSV)
+    filled = ((hsv[:, :, 1] > 90) & (hsv[:, :, 2] > 110)).mean(axis=0) > 0.5
+    dark = (hsv[:, :, 2] < 110).mean(axis=0) > 0.5
+    left, right = int(w * 0.16), int(w * 0.95)  # без значка «+» слева и рамки справа
+    bar = filled[left:right] | dark[left:right]
+    if bar.mean() < 0.8:
+        return None  # в строке не полоска (снимок не туда или поверх что-то)
+    return float(filled[left:right].mean())
+
+
+def pick_hp(readings, bar=None) -> tuple | None:
+    """Лучшее из прочитанных разными способами HP: самое частое; при равенстве — с бóльшим текущим
+    (Tesseract чаще теряет цифру, чем добавляет: 156/182 → 56/182). Если видна полоска, чтения,
+    которые ей сильно противоречат, отбрасываем."""
+    if bar is not None:
+        agree = [r for r in readings if abs(r[0] / r[1] - bar) <= HP_BAR_TOLERANCE]
+        if not agree and readings:
+            top = max(r[1] for r in readings)
+            return round(bar * top), top  # цифры не сходятся с полоской — верим полоске, максимум из цифр
+        readings = agree
+    if not readings:
+        return None
+    return max(set(readings), key=lambda r: (readings.count(r), r[0]))
+
+
+HP_BAR_TOLERANCE = 0.2
 
 
 def parse_percent(texts) -> int | None:

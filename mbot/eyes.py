@@ -5,7 +5,7 @@ import re
 import cv2
 import numpy as np
 
-from .screen import best_name, crop, find, find_scored, grab, parse_hp, parse_percent
+from .screen import best_name, crop, find, find_scored, grab, hp_bar_ratio, parse_hp, parse_percent, pick_hp
 
 # уровень на панели крита — относительно обученной области имени (проверено на 2560×1440: 15 и 35)
 LEVEL_DX, LEVEL_DY, LEVEL_W, LEVEL_H = 236, -14, 44, 34
@@ -272,7 +272,12 @@ class Eyes:
         return self.ocr.read(crop(self.image, rect), parse, whitelist)
 
     def read_hp(self, element_id: str):
-        return self._read(element_id, parse_hp, "0123456789/")
+        """(текущее, макс.) — по цифрам, прочитанным всеми способами, с проверкой по длине полоски."""
+        rect = self.region(element_id)
+        if rect is None or self.ocr is None:
+            return None
+        image = crop(self.image, rect)
+        return pick_hp(self.ocr.read_all(image, parse_hp, "0123456789/"), hp_bar_ratio(image))
 
     def read_percent(self, element_id: str):
         return self._read(element_id, parse_percent, "0123456789%")

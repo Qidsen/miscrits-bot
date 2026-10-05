@@ -120,6 +120,7 @@ class Bot:
         self._all_caught_said = False
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
         self._crit_hp = {}  # имя крита -> доля HP, когда видели его последний раз
+        self._heal_warned = False  # предупреждали ли, что маршрут лечения не записан
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
@@ -1215,11 +1216,22 @@ class Bot:
         self._publish_stats()
         if self._should_train():
             self.stats.trainings += self._train()
-        if my_ratio * 100 < self.settings.heal_below:
-            self._say(f"HP {my_ratio:.0%} — иду лечиться")
-            self._run_route("heal")
-            self.stats.heals += 1
-            self._crit_hp.clear()  # вылечили всех
+        # лечимся по самому раненому криту команды, а не по тому, кто закончил бой: иначе полуживой
+        # Patriot выходит первым в каждый бой, его меняют, а к лекарю бот не идёт, потому что сменщик здоров
+        who, lowest = min(((n, r) for n, r in self._crit_hp.items()), key=lambda p: p[1], default=(None, my_ratio))
+        if my_ratio < lowest:
+            who, lowest = None, my_ratio
+        if lowest * 100 < self.settings.heal_below:
+            if not self.eyes.teaching.routes.get("heal"):
+                if not self._heal_warned:
+                    self._heal_warned = True
+                    self._say(f"⚠ HP {(who + ' ') if who else ''}{lowest:.0%} — пора лечиться, но маршрут лечения "
+                              "не записан (вкладка «Точки и маршруты»). Продолжаю без лечения, меняя раненых")
+            else:
+                self._say(f"HP {(who + ' ') if who else ''}{lowest:.0%} — иду лечиться")
+                self._run_route("heal")
+                self.stats.heals += 1
+                self._crit_hp.clear()  # вылечили всех
         self._publish_stats()
 
     def _summary_says_train(self):

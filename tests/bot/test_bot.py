@@ -5,7 +5,7 @@ from miscrits_hud.catalog import Catalog, Species
 from miscrits_hud.game_api import Player
 from mbot.bot import Bot
 from mbot.settings import Settings
-from mbot.storage import Snapshot, Teaching
+from mbot.storage import Snapshot, Step, Teaching
 
 ABILITIES = (
     {"name": "Smack", "ap": 7, "type": "Attack", "element": "Physical"},
@@ -129,10 +129,27 @@ def test_low_hp_triggers_heal_route(tmp_path):
     turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (10, 100)}
     eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
     bot, _ = make_bot(eyes, tmp_path)
+    eyes.teaching.routes["heal"] = [Step(Snapshot((0, 0, 5, 5)))]
     routes = []
     bot._run_route = routes.append
     bot._battle()
     assert routes == ["heal"]
+
+
+def test_heal_by_the_most_wounded_crit_and_never_pretend_without_a_route(tmp_path):
+    # бой закончил здоровый крит, но у Spiker (он не в бою) 20% — лечиться надо
+    turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
+    bot, _ = make_bot(eyes, tmp_path)
+    bot._crit_hp["Spiker"] = 0.2
+    routes = []
+    bot._run_route = routes.append
+    bot._battle()
+    assert routes == []  # маршрута лечения нет — не «лечим» и HP не забываем
+    assert bot._crit_hp["Spiker"] == 0.2
+    eyes.teaching.routes["heal"] = [Step(Snapshot((0, 0, 5, 5)))]
+    bot._after_battle(None, None, False, 0, 1.0)
+    assert routes == ["heal"] and bot._crit_hp == {}
 
 
 class SpotEyes(FakeEyes):

@@ -103,3 +103,18 @@ def test_names_and_second_rank_sample_from_game():
     assert read("name_enemy_name.png") == "Quirk"
     assert ocr.rank(cv2.imread(str(data / "rank_c_plus_2.png"))) == "C+"
     assert ocr.rank(cv2.imread(str(data / "rank_c_plus.png"))) == "C+"
+
+
+def test_pick_hp_votes_and_prefers_the_reading_with_all_digits():
+    from mbot.screen import pick_hp
+    # Tesseract теряет первую цифру: 156/182 читается как 56/182 — так Patriot «оказался» с 31% HP
+    assert pick_hp([(56, 182), (156, 182), (156, 182)]) == (156, 182)
+    assert pick_hp([(56, 182), (156, 182)]) == (156, 182)  # поровну — берём с бóльшим текущим
+    assert pick_hp([(3, 83), (83, 83), (3, 63), (83, 83)]) == (83, 83)
+    assert pick_hp([]) is None
+
+
+def test_pick_hp_drops_readings_that_contradict_the_bar():
+    from mbot.screen import pick_hp
+    assert pick_hp([(56, 182), (56, 182)], bar=0.86) == (157, 182)  # цифры против полоски — верим полоске
+    assert pick_hp([(60, 71), (0, 71)], bar=0.85) == (60, 71)
