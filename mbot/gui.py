@@ -56,6 +56,11 @@ SETTING_LABELS = {
     "kill_with_first": "Добивать атакой с лечением, если она есть",
     "explore_damage": "Изучать урон в обычных боях (пробовать разные атаки)",
     "explore_switch": "Пробовать других критов команды в обычных боях",
+    "explore_enough": "Атака изучена после стольких ударов по одной стихии",
+    "explore_switch_pct": "Пробовать другого крита в стольких % боёв «на убой»",
+    "low_hp_switch_pct": "Менять крита в бою «на убой», если у него HP ниже, %",
+    "test_min_hp_pct": "Выпускать на проверки критов с HP не ниже, %",
+    "level_gap": "Крит может быть ниже противника не больше чем на (уровней)",
     "spot_cooldown": "Кулдаун точки поиска (с момента клика), с",
     "heal_below": "Идти лечиться, если HP ниже, %",
     "plat_capture_limit": "Платиновых попыток за бой (Exotic/Legendary)",
@@ -78,8 +83,10 @@ def to_pixmap(image, max_w=160, max_h=60) -> QPixmap:
 SETTING_GROUPS = (
     ("Поведение и перерывы", ("delay_min", "delay_max", "break_every_min", "break_every_max",
                               "break_len_min", "break_len_max", "session_limit_min")),
-    ("Охота и бой", ("spot_cooldown", "kill_with_first", "explore_damage", "explore_switch", "capture_hp_floor", "capture_min_chance", "plat_capture_limit",
+    ("Охота и бой", ("spot_cooldown", "kill_with_first", "capture_hp_floor", "capture_min_chance", "plat_capture_limit",
                      "heal_below", "train_every")),
+    ("Проверки урона и команда", ("explore_damage", "explore_enough", "explore_switch", "explore_switch_pct",
+                                  "low_hp_switch_pct", "test_min_hp_pct", "level_gap")),
     ("Распознавание", ("match_threshold", "button_size", "tesseract_cmd")),
 )
 

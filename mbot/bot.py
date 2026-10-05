@@ -31,12 +31,8 @@ MAX_ABILITY_PAGES = 5
 WALK_STEPS = 14
 CLICK_HALF = 14
 MISS_RETRIES = 2
-EXPLORE_ENOUGH = 3  # ударов на пару «атака → стихия цели», после которых больше не изучаем
 EXPLORE_MIN_HP = 0.5  # изучаем, только пока у моего крита больше половины HP
 MAX_TRAININGS = 4  # критов в команде
-LOW_HP_SWITCH = 0.35  # в боях «на убой» при таком HP активного крита меняем его на здорового
-FIT_HP = 0.5  # выпускать на проверки только критов, у которых HP не меньше половины
-LEVEL_GAP = 3  # и чей уровень не ниже уровня противника больше чем на столько
 SWITCH_FAILS_MAX = 3  # столько неудачных смен подряд — и смена выключается до конца сессии
 NO_CAPTURE_TURNS = 2  # столько ходов подряд не видим Capture, когда надо ловить, — пауза и скриншот
 # способности, которыми можно тянуть время при поимке: не трогают HP цели
@@ -62,7 +58,6 @@ PAGE_READ_TRIES = 3  # столько раз перечитываем стран
 ACTION_LEAVE_WAIT = 6.0  # с: столько ждём, пока после нашего действия «мой ход» сменится чужим
 LIGHT_BUTTONS_AFTER = 4.0  # с: столько ждём обученный «Мой ход», прежде чем верить светлым кнопкам
 MY_TURN_STRICT = 0.93  # картинка «Мой ход» — строгий порог: в строке сообщений любой текст похож на любой
-EXPLORE_SWITCH_CHANCE = 0.3  # доля боёв «на убой», в которых пробуем другого крита команды
 PORTRAIT_MATCH = 0.8  # насколько портрет в столбике должен совпасть с запомненным
 SWITCH_FAR = 0.15  # смена ради поимки — только если до порога HP ещё больше 15% макс. HP цели
 BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
@@ -682,7 +677,7 @@ class Bot:
                 self._say(f"сменил крита: теперь {my_name}")
                 level = self._crit_level(my_name)
                 enemy_level = self.hits.level
-                if decision.action != CAPTURE and level and enemy_level and level < enemy_level - LEVEL_GAP:
+                if decision.action != CAPTURE and level and enemy_level and level < enemy_level - self.settings.level_gap:
                     back = self._healthy_slot(enemy_level, exclude=my_name)
                     if back is not None:
                         self._say(f"{my_name} ур. {level} против ур. {enemy_level} — слишком слабый, меняю обратно")
@@ -762,7 +757,7 @@ class Bot:
                 move = action.move
             else:
                 move = None
-                if my_ratio < LOW_HP_SWITCH and self.settings.explore_switch:
+                if my_ratio * 100 < self.settings.low_hp_switch_pct and self.settings.explore_switch:
                     slot = self._healthy_slot(self.hits.level, exclude=my_name)
                     if slot is not None:
                         who = self._who_in(slot) or "другого крита"
@@ -771,7 +766,7 @@ class Bot:
                         last = None
                         continue
                 if (not explore_switch_done and self.settings.explore_switch and my_ratio > EXPLORE_MIN_HP
-                        and random.random() < EXPLORE_SWITCH_CHANCE):
+                        and random.random() * 100 < self.settings.explore_switch_pct):
                     explore_switch_done = True
                     slot = self._least_known_slot(self.hits.level, exclude=my_name)
                     if slot is not None:
@@ -784,7 +779,7 @@ class Bot:
                 if self.settings.explore_damage and my_ratio > EXPLORE_MIN_HP:
                     # убивать можно — заодно пробуем атаку, по которой меньше всего данных против этой стихии
                     least = min(moves, key=lambda m: self.hits.observed(my_name, m, target_element))
-                    if self.hits.observed(my_name, least, target_element) < EXPLORE_ENOUGH:
+                    if self.hits.observed(my_name, least, target_element) < self.settings.explore_enough:
                         move = least
                         self._state(f"изучаю урон: {least.name}")
                 if move is None and self.settings.kill_with_first:
@@ -918,11 +913,11 @@ class Bot:
         return copy.get("l") if copy else None
 
     def _fit_for(self, name, enemy_level) -> bool:
-        """Можно ли выпускать этого крита: не ниже противника больше чем на LEVEL_GAP уровней и не полуживой."""
+        """Можно ли выпускать этого крита: не ниже противника больше чем на level_gap уровней и не полуживой."""
         level = self._crit_level(name)
-        if level and enemy_level and level < enemy_level - LEVEL_GAP:
+        if level and enemy_level and level < enemy_level - self.settings.level_gap:
             return False
-        return self._crit_hp.get(name, 1.0) >= FIT_HP
+        return self._crit_hp.get(name, 1.0) * 100 >= self.settings.test_min_hp_pct
 
     def _least_known_slot(self, enemy_level=None, exclude=None):
         """Ячейка с подходящим критом, по которому меньше всего ударов в журнале (незнакомые — первыми:
