@@ -7,7 +7,8 @@ DEFAULT_RATIO = 1.5  # урон за единицу ap, пока наблюде�
 DEFAULT_HIGH = 4.0
 LOW_HP_RATIO = 0.35
 PRECIOUS_SEEN = 2  # Exotic/Legendary: только атаками, чей урон по этой стихии уже видели
-PRECIOUS_EXTRA = 1.25  # и с дополнительным запасом к худшей оценке  # без OCR шанса поимки ловим, когда у цели осталось столько HP
+PRECIOUS_EXTRA = 1.25  # и с дополнительным запасом к худшей оценке
+PRECIOUS_UNSEEN = 2.5  # атака, чей урон по этой стихии не видели: худшая оценка ×2.5 должна оставить цели floor HP
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,7 @@ def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, m
     Удар безопасен, если даже по худшей оценке у цели останется не меньше floor HP. Из безопасных берём
     самый сильный. Безопасных нет — ловим (или занимаем ход безопасной способностью, если поймать нельзя).
     Сразу ловим, только если шанс уже не ниже min_chance.
-    precious — Exotic/Legendary: только атаки, чей урон по этой стихии уже видели, и худшая оценка с запасом."""
+    precious — Exotic/Legendary: худшая оценка с запасом ×1.25, а у атак, чей урон по этой стихии не видели, ×2.5."""
     if can_capture and chance is not None and chance >= min_chance:
         return Action(CAPTURE)
     room = hp - floor
@@ -161,9 +162,10 @@ def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, m
     for m in moves:
         high = model.estimate(attacker, m, target_element, max_hp)[1]
         if precious:
-            if model.observed(attacker, m, target_element) < PRECIOUS_SEEN:
-                continue
-            high *= PRECIOUS_EXTRA
+            # невиданные по этой стихии атаки тоже можно, но с очень большим запасом: иначе по новой стихии
+            # (например, двойной) бить было бы нечем, и бот кидал бы Capture при 1%
+            seen = model.observed(attacker, m, target_element) >= PRECIOUS_SEEN
+            high *= PRECIOUS_EXTRA if seen else PRECIOUS_UNSEEN
         if high <= room:
             safe.append(m)
     if safe:

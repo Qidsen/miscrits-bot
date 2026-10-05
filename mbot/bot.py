@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
-from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, STALL, Action, DamageModel, choose_capture,
+from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, PRECIOUS_UNSEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
 from .brain.formula import owned_copy, stats_pair
 from .brain.hits import CaptureView, HitBook
@@ -980,9 +980,10 @@ class Bot:
             seen = self.hits.observed(my_name, m, target_element)
             if decision.action == CAPTURE and hp:
                 worst = CaptureView(self.hits).estimate(my_name, m, target_element, hp[1])[1]
-                worst_used = worst * (PRECIOUS_EXTRA if precious else 1)
-                ok = worst_used <= hp[0] - floor and (not precious or seen >= PRECIOUS_SEEN)
-                verdict = "безопасно" if ok else ("мало данных" if precious and seen < PRECIOUS_SEEN else "может добить")
+                unseen = precious and seen < PRECIOUS_SEEN
+                worst_used = worst * (PRECIOUS_UNSEEN if unseen else PRECIOUS_EXTRA if precious else 1)
+                ok = worst_used <= hp[0] - floor
+                verdict = ("безопасно" if ok else "может добить") + (" · мало данных, запас ×2.5" if unseen else "")
             else:
                 verdict = ""
             if action.move is m:

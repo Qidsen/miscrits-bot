@@ -140,3 +140,26 @@ def test_precious_needs_real_observations_and_half_hp():
     # экзотик с 20 HP: 11.5 > 50% от 20 — не бьём, ловим
     assert choose_capture([HIT], m, "Me", "Fire", hp=20, max_hp=100, chance=5, min_chance=70,
                           can_capture=True, precious=True).kind == CAPTURE
+
+
+class _Fixed:
+    """Модель с заданным худшим уроном и без единого виденного удара."""
+    def __init__(self, worst):
+        self.worst = worst
+
+    def estimate(self, attacker, move, target_element, max_hp=None):
+        return self.worst[move.name] / 2, self.worst[move.name]
+
+    def observed(self, attacker, move, target_element):
+        return 0
+
+
+def test_precious_with_unseen_element_still_weakens_carefully():
+    # Keeper (NatureEarth): по такой стихии ни одного удара — раньше бот сразу ловил при 1%
+    model = _Fixed({"Hit": 20, "Big": 60})
+    a = choose_capture([HIT, BIG], model, "Me", "NatureEarth", hp=120, max_hp=120, chance=1, min_chance=95,
+                       can_capture=True, precious=True)
+    assert a.kind == ATTACK and a.move == HIT  # 20 × 2.5 = 50 ≤ 110; Big: 150 > 110
+    # мало HP — запаса не хватает даже слабому удару, ловим
+    assert choose_capture([HIT, BIG], model, "Me", "NatureEarth", hp=50, max_hp=120, chance=1, min_chance=95,
+                          can_capture=True, precious=True).kind == CAPTURE
