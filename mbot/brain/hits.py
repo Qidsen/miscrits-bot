@@ -15,7 +15,7 @@ from .combat import DamageModel, Move
 from .formula import base_damage, fit, stats_at
 
 FIELDS = ("time", "attacker", "attacker_level", "ability", "ap", "times", "atk_element", "enemy", "enemy_element",
-          "enemy_level", "enemy_max_hp", "damage", "enemy_rank", "kill")
+          "enemy_level", "enemy_max_hp", "damage", "enemy_rank", "kill", "enchanted")
 # Поимка не доверяет неточным прогнозам: худший случай × столько, смотря откуда прогноз
 CAPTURE_DOUBT = {"журнал": 1.0, "формула": 1.5, "общая": 2.0}
 LEVEL_STEPS = (3, 8)  # сначала противники ±3 уровня, потом ±8
@@ -112,7 +112,8 @@ class HitBook:
         row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "attacker": attacker, "attacker_level": attacker_level or "",
                "ability": move.name, "ap": move.ap, "times": move.times, "atk_element": move.element,
                "enemy": enemy_name, "enemy_element": enemy_element, "enemy_level": enemy_level or "",
-               "enemy_max_hp": enemy_max_hp, "damage": damage, "enemy_rank": enemy_rank or "", "kill": "1" if kill else ""}
+               "enemy_max_hp": enemy_max_hp, "damage": damage, "enemy_rank": enemy_rank or "", "kill": "1" if kill else "",
+               "enchanted": "1" if getattr(move, "enchanted", False) else ""}
         if self.path:
             new = not os.path.exists(self.path)
             with open(self.path, "a", encoding="utf-8", newline="") as f:

@@ -15,7 +15,7 @@ import numpy as np
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
-from .brain.formula import stats_pair
+from .brain.formula import owned_copy, stats_pair
 from .brain.hits import CaptureView, HitBook
 from .collection import Collection
 from .mouse import VK_ESCAPE, FailSafe, press_key
@@ -910,7 +910,7 @@ class Bot:
             if species is None:
                 continue
             names = {n for page in self._pages[name] for n in page if n}
-            moves = moves_from_catalog(species.abilities, names)
+            moves = moves_from_catalog(species.abilities, names, self._enchanted(species))
             current_level, self.hits.attacker_level = self.hits.attacker_level, None
             action = choose_capture(moves, CaptureView(self.hits), name, target_element, hp[0], hp[1], None, 101, True,
                                     precious=precious, floor=self.settings.capture_hp_floor)
@@ -997,6 +997,11 @@ class Bot:
                                  f"· видел таких ударов: {seen}")
         self._emit("hit", {"ability": move.name, "seen": seen})
 
+    def _enchanted(self, species):
+        """Прокачанные способности моего экземпляра этого вида (поле en в данных игры)."""
+        copy = owned_copy(self._player_fn(), species, self.hits.attacker_level)
+        return tuple((copy or {}).get("en") or ())
+
     def _species_named(self, name):
         catalog = self._catalog_fn()
         if catalog is None:
@@ -1035,7 +1040,7 @@ class Bot:
             self._page_reads[my_name] = tries + 1
             self._pages[my_name] = self._read_pages(species)
         names = {n for page in self._pages[my_name] for n in page if n}
-        moves = moves_from_catalog(species.abilities, names)
+        moves = moves_from_catalog(species.abilities, names, self._enchanted(species))
         attack_names = {m.name for m in moves}
         extras = [n for n in names if n not in attack_names]
         return moves, extras

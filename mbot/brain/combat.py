@@ -17,6 +17,7 @@ class Move:
     times: int
     accuracy: int
     element: str
+    enchanted: bool = False  # прокачана: сила/точность уже с бонусом прокачки
 
     @property
     def power(self) -> int:
@@ -29,15 +30,23 @@ class Action:
     move: Move | None = None
 
 
-def moves_from_catalog(abilities: list, names_on_screen) -> list:
-    """Атакующие способности вида, которые есть у крита (видны на кнопках)."""
+def moves_from_catalog(abilities: list, names_on_screen, enchanted_ids=()) -> list:
+    """Атакующие способности вида, которые есть у крита (видны на кнопках). enchanted_ids — прокачанные
+    способности этого крита (из данных игры): их сила и точность — с бонусом прокачки из каталога."""
     wanted = set(names_on_screen)
+    enchanted_ids = set(enchanted_ids or ())
     moves = []
     for a in abilities:
         ap = a.get("ap") or 0
         if a.get("type") != "Attack" or ap <= 0 or a.get("name") not in wanted:
             continue
-        moves.append(Move(a["name"], int(ap), int(a.get("times") or 1), int(a.get("accuracy") or 100), a.get("element", "")))
+        accuracy = int(a.get("accuracy") or 100)
+        enchanted = a.get("id") in enchanted_ids
+        if enchanted:
+            bonus = a.get("enchant") or {}
+            ap += bonus.get("ap") or 0
+            accuracy += bonus.get("accuracy") or 0
+        moves.append(Move(a["name"], int(ap), int(a.get("times") or 1), accuracy, a.get("element", ""), enchanted))
     return moves
 
 

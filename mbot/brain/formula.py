@@ -44,6 +44,14 @@ def my_stats(species, owned: dict) -> dict:
     return stats_at(species, owned.get("l", 1), rolls, bonuses)
 
 
+def owned_copy(player, species, level=None):
+    """Мой экземпляр вида из данных игры (если копий несколько — на этом уровне, иначе самый прокачанный)."""
+    copies = [m for m in (player.miscrits if player else []) if m.get("m") == species.id]
+    if level:
+        copies = [m for m in copies if m.get("l") == level] or copies
+    return max(copies, key=lambda m: m.get("l", 0)) if copies else None
+
+
 def stats_pair(catalog, player, attacker, attacker_level, enemy, enemy_level, enemy_rank):
     """(статы моего крита, статы противника) для формулы урона или None.
     Мои — по данным игры (уровень, броски, бонусы); если копий вида несколько — та, что на этом уровне.
