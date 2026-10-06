@@ -118,3 +118,21 @@ def test_pick_hp_drops_readings_that_contradict_the_bar():
     from mbot.screen import pick_hp
     assert pick_hp([(56, 182), (56, 182)], bar=0.86) == (157, 182)  # цифры против полоски — верим полоске
     assert pick_hp([(60, 71), (0, 71)], bar=0.85) == (60, 71)
+
+
+def test_tesseract_from_settings_wins_then_bundled(tmp_path, monkeypatch):
+    from mbot import screen
+    installed = tmp_path / "installed.exe"
+    installed.write_bytes(b"")
+    bundled = tmp_path / "tesseract" / "tesseract.exe"
+    bundled.parent.mkdir()
+    bundled.write_bytes(b"")
+    monkeypatch.setattr(screen, "bundled_tesseract", lambda: bundled)
+    monkeypatch.setattr(screen.shutil, "which", lambda name: None)
+    # установлен там, где сказано в настройках, — им и пользуемся
+    assert screen.resolve_tesseract(str(installed)) == str(installed)
+    # не установлен (у другого человека) — вшитый в программу
+    assert screen.resolve_tesseract(str(tmp_path / "Tesseract-OCR" / "tesseract.exe")) == str(bundled)
+    # нигде нет — возвращаем путь из настроек как есть (проверка готовности скажет, что не найден)
+    monkeypatch.setattr(screen, "bundled_tesseract", lambda: tmp_path / "none.exe")
+    assert screen.resolve_tesseract("X:/nope.exe") == "X:/nope.exe"

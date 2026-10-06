@@ -2,7 +2,10 @@
 
 import difflib
 import re
+import shutil
+import sys
 import threading
+from pathlib import Path
 
 import cv2
 import mss
@@ -87,10 +90,28 @@ def find(image: np.ndarray, template: np.ndarray, threshold: float, near=None):
     return rect if rect is not None and score >= threshold else None
 
 
+def bundled_tesseract() -> Path:
+    """Tesseract, вшитый в программу (tools/collect_tesseract.py), или vendor/ при запуске из исходников."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent / "vendor"))
+    return base / "tesseract" / "tesseract.exe"
+
+
+def resolve_tesseract(configured: str) -> str:
+    """Путь из настроек, если там есть tesseract; иначе вшитый в программу; иначе из PATH.
+    Настройки не меняем — у кого Tesseract установлен, тот им и пользуется."""
+    if configured and Path(configured).is_file():
+        return configured
+    for candidate in (bundled_tesseract(), shutil.which("tesseract")):
+        if candidate and Path(candidate).is_file():
+            return str(candidate)
+    return configured
+
+
 class Ocr:
     def __init__(self, tesseract_cmd: str):
         import pytesseract
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        self.cmd = resolve_tesseract(tesseract_cmd)
+        pytesseract.pytesseract.tesseract_cmd = self.cmd
         self._tess = pytesseract
 
     def available(self) -> bool:

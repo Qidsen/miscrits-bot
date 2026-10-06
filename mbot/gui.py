@@ -373,15 +373,20 @@ class MainWindow(QMainWindow):
         if self.hud.controller.player is None:
             problems.append("Коллекция ещё не загружена (HUD) — бот будет считать, что у вас нет никого")
         if not self._tesseract_ok():
-            problems.append(f"Tesseract не найден: {self.settings.tesseract_cmd}")
+            problems.append(f"Tesseract не найден ни по пути из настроек ({self.settings.tesseract_cmd}), "
+                            "ни внутри программы — скачайте полную версию бота или установите Tesseract")
         return problems
 
     def _tesseract_ok(self) -> bool:
         """Проверка Tesseract запускает его как отдельную программу — найденный путь запоминаем,
         ненайденный проверяем заново (вдруг его установили, не закрывая бота)."""
         cmd = self.settings.tesseract_cmd
-        if cmd not in self._tesseract_found and Ocr(cmd).available():
-            self._tesseract_found.add(cmd)
+        if cmd not in self._tesseract_found:
+            ocr = Ocr(cmd)
+            ok = ocr.available()
+            log.info("tesseract: %s — %s", ocr.cmd, "работает" if ok else "не запускается")
+            if ok:
+                self._tesseract_found.add(cmd)
         return cmd in self._tesseract_found
 
     def _on_start(self):

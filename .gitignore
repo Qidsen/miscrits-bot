@@ -8,3 +8,4 @@ dist/
 .tmp/
 dist_dir/
 build_dir/
+vendor/
