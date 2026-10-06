@@ -6,3 +6,5 @@ dist/
 *.spec
 .superpowers/
 .tmp/
+dist_dir/
+build_dir/
