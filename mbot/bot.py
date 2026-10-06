@@ -935,11 +935,19 @@ class Bot:
         return self._crit_hp.get(name, 1.0) * 100 >= self.settings.test_min_hp_pct
 
     def _least_known_slot(self, enemy_level=None, exclude=None):
-        """Ячейка с подходящим критом, по которому меньше всего ударов в журнале (незнакомые — первыми:
-        их уровень узнаем после смены и, если слабый, вернём сильного)."""
+        """Ячейка с подходящим критом, по которому меньше всего ударов в журнале.
+        Уровень проверяем ДО смены: смена стоит хода, и слабого крита за этот ход могут убить. Поэтому незнакомого
+        (портрет ещё не видели — не знаем, кто там и какого он уровня) выпускаем, только если противник настолько
+        слабый, что не страшен даже крит 1-го уровня. Уровень противника не прочитан — не меняем вовсе."""
+        if not enemy_level:
+            return None
         best, best_key = None, None
         for slot in self._team():
             name = self._who_in(slot)
+            if name is None and enemy_level > 1 + self.settings.level_gap:
+                continue
+            if name is not None and not self._crit_level(name):
+                continue  # знаем, кто это, но не знаем уровень — тоже не рискуем
             if name is not None and (name == exclude or not self._fit_for(name, enemy_level)):
                 continue
             canon = self.hits.canon(name) if name else None

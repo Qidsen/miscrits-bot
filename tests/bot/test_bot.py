@@ -472,9 +472,8 @@ def test_team_choice_respects_level_and_hp(tmp_path):
     assert bot._healthy_slot(enemy_level=16, exclude="Strong") is None
 
 
-def test_weak_unknown_crit_is_switched_back_even_when_team_portraits_are_unknown(tmp_path):
-    # пробуем незнакомого крита из столбика, а это свежепойманный Keeper 2-го уровня против 12-го;
-    # остальных в столбике бот ещё не знает в лицо — всё равно возвращаем прежнего через ту же ячейку
+def _keeper_battle(tmp_path, who_in, seen_levels):
+    """Бой «на убой» против Flue 12-го уровня; в ячейке team_1 — Keeper 2-го уровня (так видно на экране)."""
     turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
     eyes = FakeEyes([turn] * 6 + [{"see": {"battle_won"}}, {"see": set()}])
     for k in ("team_1", "switch_confirm"):
@@ -490,7 +489,8 @@ def test_weak_unknown_crit_is_switched_back_even_when_team_portraits_are_unknown
     bot, _ = make_bot(eyes, tmp_path, owned)
     bot._catalog_fn = lambda: Catalog([ME, FLUE, GOLD, keeper])
     bot.settings.explore_switch_pct = 100
-    bot._who_in = lambda slot: None  # портреты в столбике ещё незнакомы
+    bot._who_in = who_in
+    bot._seen_levels.update(seen_levels)
     switches = []
 
     def switch(slot):
@@ -499,5 +499,18 @@ def test_weak_unknown_crit_is_switched_back_even_when_team_portraits_are_unknown
         return None
     bot._switch = switch
     bot._battle()
-    assert switches == ["team_1", "team_1"]  # пробный и обратно
-    assert bot._crit_level("Keeper") == 2  # запомнили уровень с экрана — в следующий раз не выпустим
+    return bot, switches
+
+
+def test_unknown_crit_is_not_sent_against_a_stronger_enemy(tmp_path):
+    # портрет в ячейке незнаком — не знаем ни кто там, ни уровень; смена стоит хода, слабого за него убьют
+    _, switches = _keeper_battle(tmp_path, who_in=lambda slot: None, seen_levels={})
+    assert switches == []
+
+
+def test_too_weak_crit_after_switch_goes_back_through_the_same_slot(tmp_path):
+    # по старым данным Keeper 30-го уровня, а на экране боя — 2-й: возвращаем прежнего через ту же ячейку,
+    # хотя, кто теперь в ней, бот не знает в лицо
+    bot, switches = _keeper_battle(tmp_path, who_in=lambda slot: "Keeper", seen_levels={"Keeper": 30})
+    assert switches[:2] == ["team_1", "team_1"]  # пробный и обратно
+    assert bot._crit_level("Keeper") == 2  # уровень с экрана запомнен — в следующий раз не выпустим
