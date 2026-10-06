@@ -136,3 +136,22 @@ def test_tesseract_from_settings_wins_then_bundled(tmp_path, monkeypatch):
     # нигде нет — возвращаем путь из настроек как есть (проверка готовности скажет, что не найден)
     monkeypatch.setattr(screen, "bundled_tesseract", lambda: tmp_path / "none.exe")
     assert screen.resolve_tesseract("X:/nope.exe") == "X:/nope.exe"
+
+
+def test_tesseract_gets_ascii_paths_when_folder_has_cyrillic(tmp_path, monkeypatch):
+    # у человека с английской кодировкой Windows путь «...\Нова папка\...\tessdata» для Tesseract ломается
+    from mbot import screen
+    tessdata = tmp_path / "Нова папка" / "tessdata"
+    tessdata.mkdir(parents=True)
+    (tessdata / "eng.traineddata").write_bytes(b"x")
+    assert str(tmp_path).isascii()
+    # Windows отдаёт короткое имя латиницей — его и берём
+    monkeypatch.setattr(screen, "short_path", lambda p: str(tmp_path / "NOVAPA~1" / "tessdata"))
+    assert screen.ascii_dir(tessdata, "tessdata") == str(tmp_path / "NOVAPA~1" / "tessdata")
+    # коротких имён нет — копия словаря в ProgramData
+    monkeypatch.setattr(screen, "short_path", str)
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "pd"))
+    copy = screen.ascii_dir(tessdata, "tessdata")
+    assert copy.isascii() and (tmp_path / "pd" / "miscrits-bot" / "tessdata" / "eng.traineddata").exists()
+    # путь и так латиницей — не трогаем
+    assert screen.ascii_dir(tmp_path, "x") == str(tmp_path)

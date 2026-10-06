@@ -1,6 +1,7 @@
 """Главное окно: управление ботом, обучение элементов и маршрутов, настройки, журнал."""
 
 import logging
+import os
 import threading
 import time
 import urllib.request
@@ -384,7 +385,8 @@ class MainWindow(QMainWindow):
         if cmd not in self._tesseract_found:
             ocr = Ocr(cmd)
             ok = ocr.available()
-            log.info("tesseract: %s — %s", ocr.cmd, "работает" if ok else "не запускается")
+            log.info("tesseract: %s (словарь: %s) — %s", ocr.cmd, os.environ.get("TESSDATA_PREFIX", "рядом"),
+                     "работает" if ok else f"не работает: {ocr.error}")
             if ok:
                 self._tesseract_found.add(cmd)
         return cmd in self._tesseract_found

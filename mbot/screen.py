@@ -1,6 +1,7 @@
 """Скриншоты, поиск картинок и чтение текста с экрана."""
 
 import difflib
+import os
 import re
 import shutil
 import sys
@@ -107,18 +108,70 @@ def resolve_tesseract(configured: str) -> str:
     return configured
 
 
+def short_path(path) -> str:
+    """Короткое (8.3) имя пути — латиницей, если Windows их хранит; иначе путь как есть."""
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(1024)
+    if ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, 1024):
+        return buffer.value
+    return str(path)
+
+
+def ascii_dir(path: Path, fallback_name: str) -> str:
+    """Tesseract открывает файлы по путям в кодировке системы: при английской кодировке путь с кириллицей
+    («Нова папка», имя пользователя) ломается, и он не находит словарь. Даём ему путь только латиницей:
+    короткое имя Windows, а если его нет — копию папки в ProgramData."""
+    if str(path).isascii():
+        return str(path)
+    short = short_path(path)
+    if short.isascii():
+        return short
+    target = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "miscrits-bot" / fallback_name
+    if not str(target).isascii():
+        return str(path)
+    target.mkdir(parents=True, exist_ok=True)
+    for f in path.iterdir():
+        if f.is_file() and not (target / f.name).exists():
+            shutil.copy2(f, target / f.name)
+    return str(target)
+
+
+def prepare_tesseract_paths(cmd: str) -> None:
+    """Словарь рядом с выбранным tesseract.exe и папка для временных картинок — по путям латиницей."""
+    import tempfile
+    tessdata = Path(cmd).parent / "tessdata"
+    if tessdata.is_dir():
+        os.environ["TESSDATA_PREFIX"] = ascii_dir(tessdata, "tessdata")
+    temp = Path(tempfile.gettempdir())
+    if not str(temp).isascii():
+        short = short_path(temp)
+        if short.isascii():
+            tempfile.tempdir = short
+        else:
+            target = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "miscrits-bot" / "tmp"
+            if str(target).isascii():
+                target.mkdir(parents=True, exist_ok=True)
+                tempfile.tempdir = str(target)
+
+
 class Ocr:
     def __init__(self, tesseract_cmd: str):
         import pytesseract
         self.cmd = resolve_tesseract(tesseract_cmd)
+        prepare_tesseract_paths(self.cmd)
         pytesseract.pytesseract.tesseract_cmd = self.cmd
         self._tess = pytesseract
 
     def available(self) -> bool:
+        """Работает ли распознавание по-настоящему: запуск Tesseract без словаря проходит, а чтение — нет."""
+        self.error = None
         try:
-            self._tess.get_tesseract_version()
+            probe = np.full((40, 120), 255, np.uint8)
+            cv2.putText(probe, "12", (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 1, 0, 2)
+            self._tess.image_to_string(probe, config="--psm 7")
             return True
-        except Exception:
+        except Exception as e:
+            self.error = str(e).strip()
             return False
 
     def _variants(self, image: np.ndarray, whitelist: str | None):
