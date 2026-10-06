@@ -1,5 +1,5 @@
-﻿.venv\Scripts\python -m pip install pyinstaller
-# РћР±С‰Р°СЏ РїСЂРѕРіСЂР°РјРјР°: РѕРєРЅРѕ Р±РѕС‚Р° + HUD + С‚СЂРµР№
+.venv\Scripts\python -m pip install pyinstaller
+# Combined app: bot window + HUD overlay + tray
 .venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --name MiscritsBot run_app.py
-# РўРѕР»СЊРєРѕ HUD, РєР°Рє СЂР°РЅСЊС€Рµ
+# HUD only, as before
 .venv\Scripts\pyinstaller --noconfirm --clean --onefile --windowed --name MiscritsHUD run_hud.py
