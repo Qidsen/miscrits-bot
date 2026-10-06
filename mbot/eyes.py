@@ -171,6 +171,7 @@ class Eyes:
         self.threshold = threshold
         self._grab = grabber
         self.image = None
+        self._team_key, self._team_cache = None, None  # плашки уровней команды и что на них прочитано
         self._anchors = None
         self._anchors_for = None
         self._shift = None
@@ -356,5 +357,75 @@ class Eyes:
             return None
         return self.ocr.read(crop(self.image, box), parse, "0123456789")
 
+    def read_team_levels(self, train_snap) -> list:
+        """Уровни команды с верхней панели мира: [активный в бою, 1-й в столбике, 2-й, 3-й]; None — не прочитан.
+        Плашки с уровнями ищем от синей кнопки Train (её бот уже знает) с поправкой на масштаб интерфейса."""
+        unknown = [None] * len(TEAM_BADGE_DX)
+        if self.ocr is None or self.image is None or train_snap is None or train_snap.image is None:
+            return unknown
+        core, core_rect = core_of(train_snap)
+        found = find(self.image, core, CORE_THRESHOLD)
+        if found is None:
+            return unknown
+        sx = found[0] - (core_rect[0] - train_snap.rect[0])
+        sy = found[1] - (core_rect[1] - train_snap.rect[1])
+        area = crop(self.image, (max(sx, 0), max(sy, 0), train_snap.rect[2], train_snap.rect[3]))
+        button = blue_button(area)
+        if button is None:
+            return unknown
+        bx, by, bw, bh = button
+        scale = bh / TRAIN_BLUE_H
+        centre_x, centre_y = max(sx, 0) + bx + bw / 2, max(sy, 0) + by + bh / 2
+        w, h = TEAM_BADGE_W * scale, TEAM_BADGE_H * scale
+        badges = []
+        for dx in TEAM_BADGE_DX:
+            cx, cy = centre_x + dx * scale, centre_y + TEAM_BADGE_DY * scale
+            box = (int(cx - w / 2), int(cy - h / 2), int(w), int(h))
+            badges.append(None if box[0] < 0 or box[1] < 0 else crop(self.image, box))
+        # плашки те же, что в прошлый раз, — распознавать заново незачем (OCR четырёх плашек — около 1,5 с)
+        key = b"".join(b.tobytes() if b is not None else b"-" for b in badges)
+        if key == self._team_key:
+            return list(self._team_cache)
+        levels = [None if b is None else vote(self.ocr.read_all(b, parse_level, "0123456789")) for b in badges]
+        self._team_key, self._team_cache = key, levels
+        return list(levels)
+
     def read_name(self, element_id: str, names):
         return self._read(element_id, lambda texts: best_name(texts, names))
+
+
+TRAIN_BLUE_H = 61  # высота синей кнопки Train в px при масштабе, где замерены смещения ниже
+TEAM_BADGE_DX = (-418, -336, -254, -172)  # центры плашек уровня от центра кнопки Train
+TEAM_BADGE_DY = 25
+TEAM_BADGE_W, TEAM_BADGE_H = 30, 26
+
+
+def blue_button(image):
+    """(x, y, w, h) синей кнопки (Train) в снимке или None."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    blue = (hsv[:, :, 0] > 95) & (hsv[:, :, 0] < 125) & (hsv[:, :, 1] > 120) & (hsv[:, :, 2] > 120)
+    rows = np.nonzero(blue.mean(axis=1) > 0.3)[0]
+    cols = np.nonzero(blue.mean(axis=0) > 0.3)[0]
+    if len(rows) < 10 or len(cols) < 10:
+        return None
+    return int(cols.min()), int(rows.min()), int(cols.max() - cols.min() + 1), int(rows.max() - rows.min() + 1)
+
+
+def parse_level(texts):
+    for text in texts:
+        m = re.search(r"\d{1,2}", text)
+        if m and 1 <= int(m.group()) <= 99:
+            return int(m.group())
+    return None
+
+
+def vote(values):
+    """Значение, которое дали хотя бы два способа распознавания и больше всех; иначе None — лучше не знать,
+    чем ошибиться (2 прочитанное как 25 выпустило бы слабого крита)."""
+    if not values:
+        return None
+    best = max(set(values), key=values.count)
+    top = values.count(best)
+    if top < 2 or sum(1 for v in set(values) if values.count(v) == top) > 1:
+        return None
+    return best

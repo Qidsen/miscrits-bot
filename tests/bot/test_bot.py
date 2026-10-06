@@ -514,3 +514,17 @@ def test_too_weak_crit_after_switch_goes_back_through_the_same_slot(tmp_path):
     bot, switches = _keeper_battle(tmp_path, who_in=lambda slot: "Keeper", seen_levels={"Keeper": 30})
     assert switches[:2] == ["team_1", "team_1"]  # пробный и обратно
     assert bot._crit_level("Keeper") == 2  # уровень с экрана запомнен — в следующий раз не выпустим
+
+
+def test_slot_levels_from_top_bar_choose_before_switching(tmp_path):
+    # никого в столбике бот в лицо не знает, но уровни ячеек прочитаны с верхней панели перед боем
+    eyes = FakeEyes([{"see": set()}])
+    for k in ("team_1", "team_2", "team_3", "switch_confirm"):
+        eyes.teaching.elements[k] = Snapshot((0, 0, 10, 10))
+    bot, _ = make_bot(eyes, tmp_path)
+    bot._who_in = lambda slot: None
+    bot._battle_levels = {"active": 35, "team_1": 2, "team_2": 2, "team_3": 30}
+    assert bot._least_known_slot(enemy_level=12) == "team_3"  # 2-й против 12-го не выходит, 30-й — да
+    bot._battle_levels = {"active": 35, "team_1": 2, "team_2": 2, "team_3": 2}
+    assert bot._least_known_slot(enemy_level=12) is None  # все слабые — не меняем вовсе
+    assert bot._least_known_slot(enemy_level=3) in ("team_1", "team_2", "team_3")  # против 3-го — можно

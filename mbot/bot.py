@@ -122,6 +122,8 @@ class Bot:
         self._crit_hp = {}  # имя крита -> доля HP, когда видели его последний раз
         self._heal_warned = False  # предупреждали ли, что маршрут лечения не записан
         self._seen_levels = {}  # имя крита -> уровень, увиденный на экране боя
+        self._team_levels = {}  # "active"/"team_1".. -> уровень с верхней панели мира перед боем
+        self._battle_levels = {}  # то же, но с учётом смен в текущем бою
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
@@ -396,6 +398,7 @@ class Bot:
         кликаем ещё раз уже оттуда. come_back_later — наш отсчёт кулдауна разошёлся с игрой, он начнётся
         заново с этого клика; попап (предмет/золото) закроется на следующем шаге."""
         found = None
+        self._read_team()
         clicked_at = time.monotonic()
         for attempt in range(MISS_RETRIES + 1):
             self._press(rect, label + (f" (ещё раз, {attempt})" if attempt else ""))
@@ -584,6 +587,7 @@ class Bot:
         self.stats.battles += 1
         self._page = 0
         self._blocked_slots = set()
+        self._battle_levels = dict(self._team_levels)
         enemy = rank = decision = None
         reads = 0  # сколько раз пробовали прочитать противника (не больше двух ходов)
         plat_used = 0
@@ -660,6 +664,8 @@ class Bot:
             self.hits.attacker_level = my_level
             if my_name and my_level:
                 self._seen_levels[my_name] = my_level
+                if switched is None:
+                    self._battle_levels["active"] = my_level
             if switched is not None and my_name:
                 portrait, before, slot = switched
                 switched = None
@@ -680,6 +686,9 @@ class Bot:
                     continue
                 self._switch_fails = 0
                 self._portraits[my_name] = portrait  # теперь знаем, чей это портрет
+                # смена меняет местами активного и того, кто был в ячейке
+                self._battle_levels["active"], self._battle_levels[slot] = (
+                    self._battle_levels.get(slot), self._battle_levels.get("active"))
                 self._say(f"сменил крита: теперь {my_name}")
                 level = my_level or self._crit_level(my_name)  # с экрана боя надёжнее: коллекция HUD могла устареть
                 enemy_level = self.hits.level
@@ -884,6 +893,41 @@ class Bot:
 
     # ---- смена крита ----
 
+    def _read_team(self):
+        """Перед боем — уровни команды с верхней панели мира (там же кнопка Train): первый — тот, кто выйдет
+        в бой, дальше — ячейки столбика по порядку. Так уровень каждого известен ДО смены."""
+        steps = self.eyes.teaching.routes.get("train") or []
+        if not steps or not hasattr(self.eyes, "read_team_levels"):
+            return
+        self.eyes.look()
+        levels = self.eyes.read_team_levels(steps[0].snap)
+        if not any(levels):
+            return  # панель не видно (окно, попап) — оставляем прошлые
+        slots = ("active", *TEAM_SLOTS)
+        team = dict(zip(slots, levels))
+        if team != self._team_levels:
+            self._say("команда: " + " · ".join(str(v) if v else "?" for v in levels))
+        self._team_levels = team
+
+    def _slot_level(self, slot, name=None):
+        """Уровень крита в ячейке: с верхней панели (с учётом смен в этом бою), иначе по имени."""
+        level = self._battle_levels.get(slot)
+        if level is None and name:
+            level = self._crit_level(name)
+        return level
+
+    def _slot_fits(self, slot, name, enemy_level) -> bool:
+        """Можно ли выпускать того, кто в ячейке: уровень известен и не ниже противника больше чем на level_gap
+        (неизвестный — только против совсем слабых), и не полуживой."""
+        level = self._slot_level(slot, name)
+        gap = self.settings.level_gap
+        if level is None:
+            if not enemy_level or enemy_level > 1 + gap:
+                return False
+        elif enemy_level and level < enemy_level - gap:
+            return False
+        return name is None or self._crit_hp.get(name, 1.0) * 100 >= self.settings.test_min_hp_pct
+
     def _team(self):
         if self._switch_broken or not self.eyes.knows("switch_confirm"):
             return []  # без подтверждения смена не пройдёт — не пробуем
@@ -944,11 +988,9 @@ class Bot:
         best, best_key = None, None
         for slot in self._team():
             name = self._who_in(slot)
-            if name is None and enemy_level > 1 + self.settings.level_gap:
+            if name is not None and name == exclude:
                 continue
-            if name is not None and not self._crit_level(name):
-                continue  # знаем, кто это, но не знаем уровень — тоже не рискуем
-            if name is not None and (name == exclude or not self._fit_for(name, enemy_level)):
+            if not self._slot_fits(slot, name, enemy_level):
                 continue
             canon = self.hits.canon(name) if name else None
             known = -1 if name is None else sum(1 for h in self.hits.hits if h.attacker == canon)
@@ -964,6 +1006,9 @@ class Bot:
             name = self._who_in(slot)
             if name is None or name == exclude or not self._fit_for(name, enemy_level):
                 continue
+            level = self._battle_levels.get(slot)
+            if level and enemy_level and level < enemy_level - self.settings.level_gap:
+                continue  # по верхней панели в этой ячейке сейчас слабый
             hp = self._crit_hp.get(name, 1.0)
             if best_hp is None or hp > best_hp:
                 best, best_hp = slot, hp

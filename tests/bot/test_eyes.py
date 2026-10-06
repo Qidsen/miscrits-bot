@@ -85,3 +85,39 @@ def test_camera_shift_none_on_other_screen():
     location = Snapshot((0, 0, 1600, 900), _landscape())
     other = np.full((900, 1600, 3), 30, np.uint8)
     assert camera_shift(other, location, pick_anchors(location.image)) is None
+
+
+def _team_eyes(scale=1.0):
+    from mbot.screen import Ocr
+    data = Path(__file__).parent / "data"
+    bar = cv2.imread(str(data / "topbar_35_2_2_2.png"))
+    button = cv2.imread(str(data / "train_button.png"))
+    if scale != 1.0:  # другой масштаб интерфейса: и экран, и снимок кнопки при обучении крупнее
+        bar = cv2.resize(bar, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        button = cv2.resize(button, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    screen = np.zeros((int(400 * scale), int(1000 * scale), 3), np.uint8)
+    screen[:bar.shape[0], 100:100 + bar.shape[1]] = bar  # панель не в углу экрана
+    snap = Snapshot((100 + int(502 * scale), int(9 * scale), button.shape[1], button.shape[0]), button)
+    eyes = Eyes(Teaching({}), Ocr(r"C:\Program Files\Tesseract-OCR\tesseract.exe"), 0.82, lambda: screen)
+    eyes.look()
+    return eyes, snap
+
+
+def test_team_levels_read_from_the_world_top_bar():
+    # 1-й — тот, кто выйдет в бой, дальше — ячейки столбика по порядку
+    eyes, snap = _team_eyes()
+    assert eyes.read_team_levels(snap) == [35, 2, 2, 2]
+
+
+def test_team_levels_follow_interface_scale():
+    eyes, snap = _team_eyes(scale=1.25)
+    assert eyes.read_team_levels(snap) == [35, 2, 2, 2]
+
+
+def test_team_levels_unknown_without_the_bar():
+    from mbot.screen import Ocr
+    eyes = Eyes(Teaching({}), Ocr(r"C:\Program Files\Tesseract-OCR\tesseract.exe"), 0.82,
+                lambda: np.zeros((300, 800, 3), np.uint8))
+    eyes.look()
+    button = cv2.imread(str(Path(__file__).parent / "data" / "train_button.png"))
+    assert eyes.read_team_levels(Snapshot((0, 0, 110, 110), button)) == [None] * 4
