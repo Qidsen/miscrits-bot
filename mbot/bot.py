@@ -121,6 +121,7 @@ class Bot:
         self._portraits = {}  # имя крита -> картинка его портрета в столбике команды (узнаём при смене)
         self._crit_hp = {}  # имя крита -> доля HP, когда видели его последний раз
         self._heal_warned = False  # предупреждали ли, что маршрут лечения не записан
+        self._seen_levels = {}  # имя крита -> уровень, увиденный на экране боя
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
@@ -657,6 +658,8 @@ class Bot:
                 self._crit_hp[my_name] = my_ratio  # HP сохраняется между боями до лечения
             my_level = self.eyes.read_level("my")
             self.hits.attacker_level = my_level
+            if my_name and my_level:
+                self._seen_levels[my_name] = my_level
             if switched is not None and my_name:
                 portrait, before, slot = switched
                 switched = None
@@ -678,11 +681,17 @@ class Bot:
                 self._switch_fails = 0
                 self._portraits[my_name] = portrait  # теперь знаем, чей это портрет
                 self._say(f"сменил крита: теперь {my_name}")
-                level = self._crit_level(my_name)
+                level = my_level or self._crit_level(my_name)  # с экрана боя надёжнее: коллекция HUD могла устареть
                 enemy_level = self.hits.level
-                if decision.action != CAPTURE and level and enemy_level and level < enemy_level - self.settings.level_gap:
-                    back = self._healthy_slot(enemy_level, exclude=my_name)
-                    if back is not None:
+                if decision.action != CAPTURE:
+                    if not level or not enemy_level:
+                        self._say(f"не вижу уровня ({my_name}: {level or '?'}, противник: {enemy_level or '?'}) — "
+                                  "не могу проверить, не слишком ли он слабый")
+                    elif level < enemy_level - self.settings.level_gap:
+                        # прежний крит после смены стоит в той ячейке, через которую меняли, — туда и возвращаемся,
+                        # даже если портреты остальных ещё незнакомы
+                        back = self._healthy_slot(enemy_level, exclude=my_name)
+                        back = slot if back is None else back
                         self._say(f"{my_name} ур. {level} против ур. {enemy_level} — слишком слабый, меняю обратно")
                         switched = (self._switch(back), my_name, back)
                         last = None
@@ -911,6 +920,9 @@ class Bot:
         return portrait
 
     def _crit_level(self, name):
+        """Уровень моего крита: последний увиденный на экране боя, иначе из коллекции HUD."""
+        if name in self._seen_levels:
+            return self._seen_levels[name]
         species = self._species_named(name) if name else None
         copy = owned_copy(self._player_fn(), species) if species else None
         return copy.get("l") if copy else None

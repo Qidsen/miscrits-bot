@@ -470,3 +470,34 @@ def test_team_choice_respects_level_and_hp(tmp_path):
     assert bot._least_known_slot(enemy_level=16) == "team_3"  # 7-й уровень против 16-го и полуживой — нет
     assert bot._healthy_slot(enemy_level=16) == "team_3"
     assert bot._healthy_slot(enemy_level=16, exclude="Strong") is None
+
+
+def test_weak_unknown_crit_is_switched_back_even_when_team_portraits_are_unknown(tmp_path):
+    # пробуем незнакомого крита из столбика, а это свежепойманный Keeper 2-го уровня против 12-го;
+    # остальных в столбике бот ещё не знает в лицо — всё равно возвращаем прежнего через ту же ячейку
+    turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn] * 6 + [{"see": {"battle_won"}}, {"see": set()}])
+    for k in ("team_1", "switch_confirm"):
+        eyes.teaching.elements[k] = Snapshot((0, 0, 10, 10))
+    keeper = Species(9, ("Keeper",), "NatureEarth", "Legendary", {}, ABILITIES)
+    active = {"name": "Patriot"}
+    levels = {"Patriot": 35, "Keeper": 2}
+    eyes.read_name = lambda element_id, names: (
+        active["name"] if element_id == "my_name" else "Flue" if element_id == "enemy_name"
+        else {"ability_1": "Smack", "ability_2": "Bash", "ability_3": "Power Up"}.get(element_id))
+    eyes.read_level = lambda who: 12 if who == "enemy" else levels[active["name"]]
+    owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
+    bot, _ = make_bot(eyes, tmp_path, owned)
+    bot._catalog_fn = lambda: Catalog([ME, FLUE, GOLD, keeper])
+    bot.settings.explore_switch_pct = 100
+    bot._who_in = lambda slot: None  # портреты в столбике ещё незнакомы
+    switches = []
+
+    def switch(slot):
+        switches.append(slot)
+        active["name"] = "Keeper" if active["name"] == "Patriot" else "Patriot"
+        return None
+    bot._switch = switch
+    bot._battle()
+    assert switches == ["team_1", "team_1"]  # пробный и обратно
+    assert bot._crit_level("Keeper") == 2  # запомнили уровень с экрана — в следующий раз не выпустим
