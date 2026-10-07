@@ -9,3 +9,5 @@ dist/
 dist_dir/
 build_dir/
 vendor/
+dist_new/
+build_new/
