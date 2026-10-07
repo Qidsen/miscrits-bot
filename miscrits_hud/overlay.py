@@ -19,9 +19,46 @@ ELEMENT_COLORS = {
 }
 
 
+ELEMENT_NAMES = {"Fire": "Огонь", "Water": "Вода", "Nature": "Природа", "Earth": "Земля",
+                 "Lightning": "Молния", "Wind": "Ветер"}
+RARITY = {  # редкость → (как подписать, цвет)
+    "Legendary": ("Легенда", "#ffb547"), "Exotic": ("Экзотик", "#c77dff"), "Epic": ("Эпик", "#5aa9ff"),
+    "Rare": ("Редкий", "#3ecf8e"), "Common": ("Обычный", "#aab2c5"),
+}
+
+
 def _element_color(element: str) -> str:
     # Гибридные стихии вроде "FireWind" красим по первой.
     return next((color for name, color in ELEMENT_COLORS.items() if element.startswith(name)), "#666666")
+
+
+def split_element(element: str) -> list:
+    """«NatureEarth» → [«Nature», «Earth»]."""
+    parts, rest = [], element or ""
+    while rest:
+        name = next((n for n in ELEMENT_NAMES if rest.startswith(n)), None)
+        if name is None:
+            return parts or [element]
+        parts.append(name)
+        rest = rest[len(name):]
+    return parts
+
+
+def _kind_html(rarity: str, element: str, dim: bool) -> str:
+    """«Экзотик · Природа / Земля» — редкость и стихии своими цветами (приглушённо у непойманных)."""
+    label, color = RARITY.get(rarity, (rarity, "#9a9a9a"))
+    tone = _muted if dim else (lambda c: c)
+    elements = " / ".join(f"<span style='color:{tone(ELEMENT_COLORS.get(p, '#9a9a9a'))}'>{ELEMENT_NAMES.get(p, p)}</span>"
+                          for p in split_element(element))
+    return (f"<span style='font-size:11px'><span style='color:{tone(color)}'>{label}</span>"
+            f"<span style='color:#7a7a7a'> · </span>{elements}</span>")
+
+
+def _muted(color: str) -> str:
+    """Цвет наполовину к серому — для непойманных и не сегодняшних (Qt в подписях не понимает opacity)."""
+    c = QColor(color)
+    grey = 110
+    return QColor((c.red() + grey) // 2, (c.green() + grey) // 2, (c.blue() + grey) // 2).name()
 
 
 def clamp_position(pos: QPoint, size, available) -> QPoint:
@@ -169,6 +206,7 @@ class OverlayWindow(QWidget):
         icon.setPixmap(_icon_pixmap(self._icon_lookup(row.name), row.name, row.element, row.caught and row.today))
         icon.setFixedSize(ICON, ICON)
         title = row.name if row.caught and row.today else f"<span style='color:#8a8a8a'>{row.name}</span>"
+        title += "<br>" + _kind_html(row.rarity, row.element, not (row.caught and row.today))
         if not row.today:
             title += f"<br><span style='color:#7a7a7a; font-size:11px'>{format_days(row.days)}</span>"
         name = QLabel(title)

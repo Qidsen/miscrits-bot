@@ -103,3 +103,12 @@ def test_render_while_hidden_has_full_size_when_shown(qapp):
     window.show()
     qapp.processEvents()
     assert window.height() > 100
+
+
+def test_kind_line_shows_rarity_and_every_element():
+    from miscrits_hud.overlay import _kind_html, split_element
+    assert split_element("NatureEarth") == ["Nature", "Earth"]
+    assert split_element("Fire") == ["Fire"]
+    html = _kind_html("Legendary", "NatureEarth", dim=False)
+    assert "Легенда" in html and "Природа" in html and "Земля" in html
+    assert "Экзотик" in _kind_html("Exotic", "Water", dim=True)

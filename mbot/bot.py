@@ -138,6 +138,7 @@ class Bot:
         self._crit_hp = {}  # имя крита -> доля HP, когда видели его последний раз
         self._heal_warned = False  # предупреждали ли, что маршрут лечения не записан
         self._seen_levels = {}  # имя крита -> уровень, увиденный на экране боя
+        self._no_targets_said = None  # (локация, зона), где уже сказали, что целей охоты тут нет
         self._team_levels = {}  # "active"/"team_1".. -> уровень с верхней панели мира перед боем
         self._battle_levels = {}  # то же, но с учётом смен в текущем бою
         self._crit_hp_abs = {}  # имя крита -> HP в единицах, когда видели его последний раз
@@ -465,6 +466,15 @@ class Bot:
             in_zone = species is None or species_in_zone(species, location, area)
             if in_zone and (farm or m.name in targets):
                 markers.append(m)
+        if not farm and not markers and self._no_targets_said != (location, area):
+            # цели есть, но не в этой зоне — бот уйдёт фармить ближайшие точки; объясняем, почему
+            self._no_targets_said = (location, area)
+            where_else = []
+            for name in sorted(targets):
+                species = next((s for s in catalog.species if s.names[0] == name), None)
+                zones = sorted((species.locations.get(location) or {}).keys()) if species else []
+                where_else.append(f"{name} — {'зона ' + ', '.join(zones) if zones else 'не в ' + location}")
+            self._say(f"целей охоты в зоне {area} нет ({'; '.join(where_else)}) — фармлю ближайшие точки")
         return (location, markers) if markers else None
 
     def _view(self):

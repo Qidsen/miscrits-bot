@@ -606,3 +606,25 @@ def test_enemy_moves_from_message_line_become_effects(tmp_path):
     bot._take_messages(humbug, "Patriot")
     assert bot.fx.stat_delta(ME) == {"ed": -11, "pd": -11}
     assert bot._messages == []
+
+
+def test_bot_says_why_it_farms_when_targets_live_in_another_zone(tmp_path):
+    from miscrits_hud.catalog import Catalog
+    from mbot.worldmap import Marker
+
+    inferno = Species(196, ("Inferno",), "Fire", "Epic", {"Mansion": {"6": []}})
+    papa = Species(98, ("Papa",), "Water", "Exotic", {"Mansion": {"3": []}})
+    said = []
+    bot = Bot(FakeEyes([{"see": set()}]), lambda r: None, lambda: Catalog([inferno, papa]), lambda: None,
+              Settings(hunt_targets=["Inferno"]), tmp_path / "l.json", tmp_path, location_fn=lambda: ("Mansion", 3))
+    bot._say = said.append
+
+    class Maps:
+        def markers(self, location):
+            return [Marker("Inferno", 196, "Epic", 442, 797), Marker("Papa", 98, "Exotic", 1668, 1049)]
+
+    bot._companion = Maps()
+    assert bot._map_targets() is None
+    assert said == ["целей охоты в зоне 3 нет (Inferno — зона 6) — фармлю ближайшие точки"]
+    bot._map_targets()
+    assert len(said) == 1  # один раз на зону
