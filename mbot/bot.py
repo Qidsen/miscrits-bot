@@ -139,6 +139,8 @@ class Bot:
         self._seen_levels = {}  # имя крита -> уровень, увиденный на экране боя
         self._team_levels = {}  # "active"/"team_1".. -> уровень с верхней панели мира перед боем
         self._battle_levels = {}  # то же, но с учётом смен в текущем бою
+        self._crit_hp_abs = {}  # имя крита -> HP в единицах, когда видели его последний раз
+        self._enemy_hit = None
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
@@ -603,6 +605,8 @@ class Bot:
         self._page = 0
         self._blocked_slots = set()
         self._battle_levels = dict(self._team_levels)
+        self._enemy_hit = None  # самый сильный удар противника по моим критам в этом бою
+        my_prev = None  # (имя моего крита, его HP на прошлом ходу)
         enemy = rank = decision = None
         reads = 0  # сколько раз пробовали прочитать противника (не больше двух ходов)
         plat_used = 0
@@ -675,6 +679,11 @@ class Bot:
             me = by_name.get(my_name)
             if my_name and mine:
                 self._crit_hp[my_name] = my_ratio  # HP сохраняется между боями до лечения
+                self._crit_hp_abs[my_name] = mine[0]
+                if my_prev and my_prev[0] == my_name and mine[0] < my_prev[1]:
+                    # сколько противник снял за свой ход (с ядом и прочим) — по этому и судим, переживёт ли крит
+                    self._enemy_hit = max(self._enemy_hit or 0, my_prev[1] - mine[0])
+                my_prev = (my_name, mine[0])
             my_level = self.eyes.read_level("my")
             self.hits.attacker_level = my_level
             if my_name and my_level:
@@ -793,11 +802,14 @@ class Bot:
                 move = action.move
             else:
                 move = None
-                if my_ratio * 100 < self.settings.low_hp_switch_pct and self.settings.explore_switch:
+                in_danger = bool(mine and self._enemy_hit and mine[0] <= 2 * self._enemy_hit)
+                if (my_ratio * 100 < self.settings.low_hp_switch_pct or in_danger) and self.settings.explore_switch:
                     slot = self._healthy_slot(self.hits.level, exclude=my_name)
                     if slot is not None:
                         who = self._who_in(slot) or "другого крита"
-                        self._say(f"у {my_name} HP {my_ratio:.0%} — меняю на {who}, чтобы не умер")
+                        why = (f"у {my_name} {mine[0]} HP, а противник снимает до {self._enemy_hit} за ход"
+                               if in_danger else f"у {my_name} HP {my_ratio:.0%}")
+                        self._say(f"{why} — меняю на {who} ({self._slot_note(slot)}), чтобы не умер")
                         switched = (self._switch(slot), my_name, slot)
                         last = None
                         continue
@@ -807,7 +819,8 @@ class Bot:
                     slot = self._least_known_slot(self.hits.level, exclude=my_name)
                     if slot is not None:
                         who = self._who_in(slot) or "незнакомого крита"
-                        self._say(f"убиваем, можно поучиться: пробую {who} — по нему мало данных об уроне")
+                        self._say(f"убиваем, можно поучиться: пробую {who} ({self._slot_note(slot)}) против "
+                                  f"ур. {self.hits.level or '?'} — по нему мало данных об уроне")
                         switched = (self._switch(slot), my_name, slot)
                         last = None
                         continue
@@ -974,6 +987,18 @@ class Bot:
             level = self._crit_level(name)
         return level
 
+    def _slot_note(self, slot) -> str:
+        """«ур. 22, HP 37%» про того, кто в ячейке, — для журнала."""
+        name = self._who_in(slot)
+        level = self._slot_level(slot, name)
+        hp = self._crit_hp.get(name) if name else None
+        return f"ур. {level or '?'}, HP {f'{hp:.0%}' if hp is not None else '?'}"
+
+    def _survives(self, name) -> bool:
+        """Переживёт ли крит два хода противника по самому сильному его удару в этом бою (если HP известно)."""
+        hp = self._crit_hp_abs.get(name) if name else None
+        return not (hp is not None and self._enemy_hit and hp <= 2 * self._enemy_hit)
+
     def _slot_fits(self, slot, name, enemy_level) -> bool:
         """Можно ли выпускать того, кто в ячейке: уровень известен и не ниже противника больше чем на level_gap
         (неизвестный — только против совсем слабых), и не полуживой."""
@@ -983,6 +1008,8 @@ class Bot:
             if not enemy_level or enemy_level > 1 + gap:
                 return False
         elif enemy_level and level < enemy_level - gap:
+            return False
+        if not self._survives(name):
             return False
         return name is None or self._crit_hp.get(name, 1.0) * 100 >= self.settings.test_min_hp_pct
 
@@ -1067,6 +1094,8 @@ class Bot:
             level = self._battle_levels.get(slot)
             if level and enemy_level and level < enemy_level - self.settings.level_gap:
                 continue  # по верхней панели в этой ячейке сейчас слабый
+            if not self._survives(name):
+                continue  # не переживёт и двух ходов противника
             hp = self._crit_hp.get(name, 1.0)
             if best_hp is None or hp > best_hp:
                 best, best_hp = slot, hp
@@ -1377,6 +1406,7 @@ class Bot:
                 self._run_route("heal")
                 self.stats.heals += 1
                 self._crit_hp.clear()  # вылечили всех
+                self._crit_hp_abs.clear()
         self._publish_stats()
 
     def _summary_says_train(self):

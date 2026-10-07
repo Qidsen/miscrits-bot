@@ -576,3 +576,21 @@ def test_team_level_never_drops_from_a_misread(tmp_path):
     assert bot._team_levels["active"] == 35
     bot._read_team()  # поменялась вся команда — принимаем
     assert list(bot._team_levels.values()) == [2, 2, 2, 2]
+
+
+def test_crit_leaves_when_two_enemy_turns_would_kill_it(tmp_path):
+    # Defender: 100 → 70 → 55 HP. 55% выше порога 35%, но противник снимает 30 за ход — двух ходов не пережить
+    frames = [{"see": {"battle", "my_turn"}, "enemy_hp": (90, 90), "my_hp": (hp, 100)}
+              for hp in (100, 70, 55) for _ in range(4)]
+    eyes = FakeEyes(frames + [{"see": {"battle_won"}}, {"see": set()}])
+    for k in ("team_1", "switch_confirm"):
+        eyes.teaching.elements[k] = Snapshot((0, 0, 10, 10))
+    owned = Player("", 0, [{"m": 2, "h": 3, "s": 3, "e": 3, "d": 3, "p": 3, "pd": 3}])
+    bot, _ = make_bot(eyes, tmp_path, owned)
+    bot.settings.explore_switch_pct = 0
+    bot.settings.explore_damage = False
+    bot._who_in = lambda slot: "Spiker"
+    switches = []
+    bot._switch = lambda slot: switches.append(slot)
+    bot._battle()
+    assert switches[:1] == ["team_1"] and bot._enemy_hit >= 30
