@@ -594,3 +594,15 @@ def test_crit_leaves_when_two_enemy_turns_would_kill_it(tmp_path):
     bot._switch = lambda slot: switches.append(slot)
     bot._battle()
     assert switches[:1] == ["team_1"] and bot._enemy_hit >= 30
+
+
+def test_enemy_moves_from_message_line_become_effects(tmp_path):
+    from mbot.brain.effects import ME
+    debilitate = {"name": "Debilitate", "ap": -11, "element": "Misc", "type": "Buff", "keys": ["ed", "pd"]}
+    humbug = Species(8, ("Humbug",), "Nature", "Common", {},
+                     ({"name": "Leaves", "ap": 7, "type": "Attack", "element": "Nature"}, debilitate))
+    bot, _ = make_bot(FakeEyes([{"see": set()}]), tmp_path)
+    bot._messages = ["Patriot uses The Big Finale", "Humbug uses Debilitat!"]  # OCR съел букву
+    bot._take_messages(humbug, "Patriot")
+    assert bot.fx.stat_delta(ME) == {"ed": -11, "pd": -11}
+    assert bot._messages == []

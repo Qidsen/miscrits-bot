@@ -15,13 +15,14 @@ import numpy as np
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, PRECIOUS_UNSEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
+from .brain.effects import FOE, ME, BattleState, effects_of
 from .brain.formula import owned_copy, stats_at, stats_pair
 from .brain.hits import CaptureView, HitBook
 from .collection import Collection
 from .eyes import CORE_THRESHOLD, core_of
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
-from .screen import find, find_scored, fix_hp
+from .screen import best_name, find, find_scored, fix_hp
 from .storage import ABILITY_SLOTS, POPUPS, TEAM_SLOTS
 from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
 
@@ -141,6 +142,8 @@ class Bot:
         self._battle_levels = {}  # то же, но с учётом смен в текущем бою
         self._crit_hp_abs = {}  # имя крита -> HP в единицах, когда видели его последний раз
         self._enemy_hit = None
+        self.fx = BattleState()  # эффекты текущего боя на моём крите и на противнике
+        self._messages = []  # строки «X uses Y», увиденные с прошлого хода
         self._ability_names = {}  # имя крита -> названия всех его способностей (для чтения кнопок)
         self._page_reads = {}  # имя крита -> сколько раз читали его страницы способностей
         self._switch_broken = False
@@ -607,6 +610,10 @@ class Bot:
         self._battle_levels = dict(self._team_levels)
         self._enemy_hit = None  # самый сильный удар противника по моим критам в этом бою
         my_prev = None  # (имя моего крита, его HP на прошлом ходу)
+        self.fx = BattleState()
+        self._messages = []
+        self.hits.modifiers = None
+        fx_seen = ""
         enemy = rank = decision = None
         reads = 0  # сколько раз пробовали прочитать противника (не больше двух ходов)
         plat_used = 0
@@ -714,6 +721,7 @@ class Bot:
                 self._battle_levels["active"], self._battle_levels[slot] = (
                     self._battle_levels.get(slot), self._battle_levels.get("active"))
                 self._say(f"сменил крита: теперь {my_name}")
+                self.fx.switched(ME)  # всё, что висело на ушедшем, ушло вместе с ним
                 level = my_level or self._crit_level(my_name)  # с экрана боя надёжнее: коллекция HUD могла устареть
                 enemy_level = self.hits.level
                 if decision.action != CAPTURE:
@@ -730,11 +738,35 @@ class Bot:
                         last = None
                         continue
             target_element = enemy.element if enemy else ""
+            self._take_messages(enemy, my_name)
             if last and hp and last[0] == my_name and hp[0] <= last[2]:
                 # один наш удар за ход: урон = HP цели до него минус HP сейчас. Если HP выросло (противник
                 # подлечился), удар не записываем — разница была бы неправдой
-                self._record_hit(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
-                                 target_element, self.hits.level, hp[1], last[2] - hp[0], rank)
+                # что искажает разницу HP цели: эффекты на ней самой, а с моей стороны — только баффы урона
+                # и непонятное (лечение моего крита, как у The Big Finale, урон по цели не меняет)
+                busy = self.fx.dirty(FOE) + [e.name for e in self.fx.on[ME] if e.kind == "unknown"]
+                damage = last[2] - hp[0]
+                factor, unsure = self.hits._mod_factor(last[0], last[1], target_element)
+                if busy or unsure:
+                    # яд, лечение, блок на цели или непонятный эффект: разница HP — не урон удара, не пишем
+                    why = ", ".join(sorted(set(busy))) or "баффы без статов для пересчёта"
+                    self._emit("battle_log", f"📝 не записал {last[1].name}: на поле {why}")
+                else:
+                    if factor != 1.0:
+                        # баффы и дебаффы статов во время удара: пишем урон, приведённый к бою без них
+                        self._emit("battle_log", f"📝 {last[1].name}: {damage} при эффектах ×{factor:.2f} → "
+                                                 f"в журнал {round(damage / factor)}")
+                        damage = round(damage / factor)
+                    self._record_hit(last[0], my_level, last[1], enemy.names[0] if enemy else "?",
+                                     target_element, self.hits.level, hp[1], damage, rank)
+            self.fx.turn_passed(ME)
+            self.fx.turn_passed(FOE)
+            mods = (self.fx.stat_delta(ME), self.fx.stat_delta(FOE), self.fx.negated(FOE))
+            self.hits.modifiers = mods if (mods[0] or mods[1] or mods[2]) else None
+            described = f"на противнике: {self.fx.describe(FOE) or '—'}; на мне: {self.fx.describe(ME) or '—'}"
+            if described != fx_seen and (self.fx.on[ME] or self.fx.on[FOE] or fx_seen):
+                self._say(f"эффекты — {described}")
+                fx_seen = described
             if me is None:
                 raise Stuck("не распознал своего крита")
             moves, extras = self._known_moves(my_name, me)
@@ -748,10 +780,13 @@ class Bot:
                     plat = self.eyes.sees("plat_capture")
                 chance = self.eyes.read_percent("capture_chance") if self.eyes.knows("capture_chance") else None
                 precious = bool(enemy) and enemy.rarity in PLAT_RARITIES
+                # неразобранный эффект на поле — урон непредсказуем: берём запас как для Exotic/Legendary
+                careful = precious or bool(self.fx.unknown())
                 action = choose_capture(moves, CaptureView(self.hits), my_name, target_element,
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
                                         self.settings.capture_min_chance, (can_capture or plat) is not None,
-                                        precious=precious, floor=self.settings.capture_hp_floor)
+                                        precious=careful, floor=self.settings.capture_hp_floor,
+                                        extra=self.fx.dot(FOE))
                 high_chance = chance is not None and chance >= self.settings.capture_min_chance
                 if (action.kind in (CAPTURE, STALL) and not high_chance and hp
                         and hp[0] - self.settings.capture_hp_floor > SWITCH_FAR * hp[1]):
@@ -795,6 +830,7 @@ class Bot:
                         continue
                     self._say(f"тяну время: {safe[0]} (не наносит урон), поймать сейчас нельзя")
                     self._use(safe[0], my_name)
+                    self._applied(me, safe[0])
                     self._park_mouse()
                     last = None
                     continue
@@ -843,12 +879,44 @@ class Bot:
                 self._explain(enemy, rank, hp, my_name, mine, moves, target_element, decision,
                               Action(ATTACK, move), None, False, why)
             self._use(move.name, my_name)
+            self._applied(me, move.name)
             last = (my_name, move, hp[0]) if hp else None
             self._park_mouse()
             self._sleep(1.0)
         self._emit("battle_end", None)
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
         return enemy
+
+    def _take_messages(self, enemy, my_name):
+        """Строки «X uses Y» с прошлого хода: способности противника — в состояние боя (свои бот учитывает сам,
+        когда нажимает). Название сверяется со списком способностей этого вида из каталога."""
+        messages, self._messages = self._messages, []
+        if enemy is None:
+            return
+        names = [a["name"] for a in enemy.abilities]
+        for text in messages:
+            m = re.match(r"\s*(.*?)\s+uses?\s+(.+?)[\s.!]*$", text, re.IGNORECASE)
+            if not m:
+                continue
+            who, what = m.group(1), m.group(2)
+            if my_name and best_name([who], [my_name]) and not best_name([who], enemy.names):
+                continue  # это наш ход
+            ability = best_name([what], names)
+            if ability is None:
+                self._say(f"противник: «{text}» — способность не узнал")
+                continue
+            entry = next(a for a in enemy.abilities if a["name"] == ability)
+            if effects_of(entry):
+                self.fx.apply(entry, FOE)
+                self._emit("battle_log", f"⚑ {enemy.names[0]}: {ability} — {entry.get('desc', '')}")
+
+    def _applied(self, me, ability_name):
+        """Свою способность нажали — её эффекты (яд на противнике, бафф на себя…) в состояние боя."""
+        if me is None:
+            return
+        entry = next((a for a in me.abilities if a.get("name") == ability_name), None)
+        if entry is not None and effects_of(entry):
+            self.fx.apply(entry, ME)
 
     def _enemy_hp(self, enemy):
         """HP противника с проверкой: сколько его бывает у этого вида на этом уровне (по прошлым боям, иначе
@@ -925,10 +993,13 @@ class Bot:
         """Свой ход. Главное — строка сообщений боя: «It's your turn» — наш ход, любой другой текст
         («Spike uses Bite») — ещё идёт чужой ход или анимация. Если строка пустая — запасные признаки:
         обученная картинка «Мой ход» (строгий порог) или, если долго ничего, светлые кнопки способностей."""
-        message = self.eyes.turn_message().lower()
+        text = self.eyes.turn_message()
+        message = text.lower()
         if re.search(r"\byour\b|s your|your tur", message):
             return True
         if re.search(r"\buses?\b|\bused\b|\bmissed\b|\bturns?\b", message):
+            if re.search(r"\buses?\b", message) and text not in self._messages:
+                self._messages.append(text)  # «Humbug uses Debilitate» — разберём, какой эффект он наложил
             return False  # «Spike uses Bite» и т.п. — идёт чужой ход или анимация
         # строка пустая или нечитаемая (например, её закрыла подсказка) — запасные признаки
         if self.eyes.sees_strictly("my_turn", MY_TURN_STRICT) is not None:

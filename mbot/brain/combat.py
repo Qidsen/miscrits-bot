@@ -149,15 +149,16 @@ def choose_kill(moves, model, attacker, target_element) -> Move:
 
 
 def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, min_chance, can_capture,
-                   precious=False, floor=10) -> Action:
+                   precious=False, floor=10, extra=0) -> Action:
     """Подводим HP цели как можно ближе к floor и только потом ловим.
     Удар безопасен, если даже по худшей оценке у цели останется не меньше floor HP. Из безопасных берём
     самый сильный. Безопасных нет — ловим (или занимаем ход безопасной способностью, если поймать нельзя).
     Сразу ловим, только если шанс уже не ниже min_chance.
-    precious — Exotic/Legendary: худшая оценка с запасом ×1.25, а у атак, чей урон по этой стихии не видели, ×2.5."""
+    precious — Exotic/Legendary: худшая оценка с запасом ×1.25, а у атак, чей урон по этой стихии не видели, ×2.5.
+    extra — урон, который цель получит и без удара до нашего следующего хода (яд и прочее по ходам)."""
     if can_capture and chance is not None and chance >= min_chance:
         return Action(CAPTURE)
-    room = hp - floor
+    room = hp - floor - extra
     safe = []
     for m in moves:
         high = model.estimate(attacker, m, target_element, max_hp)[1]

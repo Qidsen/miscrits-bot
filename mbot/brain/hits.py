@@ -11,13 +11,14 @@ import os
 import time
 from dataclasses import dataclass
 
-from .combat import DamageModel, Move
+from .combat import DamageModel, Move, multiplier
 from .formula import base_damage, fit, stats_at
 
 FIELDS = ("time", "attacker", "attacker_level", "ability", "ap", "times", "atk_element", "enemy", "enemy_element",
           "enemy_level", "enemy_max_hp", "damage", "enemy_rank", "kill", "enchanted")
 # Поимка не доверяет неточным прогнозам: худший случай × столько, смотря откуда прогноз
 CAPTURE_DOUBT = {"журнал": 1.0, "формула": 1.5, "общая": 2.0}
+UNSURE_MARGIN = 1.3  # эффекты боя есть, а статов для расчёта нет — худший случай с запасом
 LEVEL_STEPS = (3, 8)  # сначала противники ±3 уровня, потом ±8
 MIN_SIMILAR = 2
 TRUST_SIMILAR = 3  # столько похожих ударов — и журнал важнее формулы
@@ -94,6 +95,7 @@ class HitBook:
         self.enemy = None  # имя текущего противника
         self.enemy_rank = None
         self.attacker_level = None  # уровень моего крита сейчас: у растущих критов урон меняется с уровнем
+        self.modifiers = None  # эффекты текущего боя: (очки к моим статам, к статам цели, снята ли слабость цели)
         self.hits = []
         self._calibration = None
         self._calibrated = False
@@ -224,7 +226,40 @@ class HitBook:
         return self.estimate_with_source(attacker, move, target_element, max_hp)[:2]
 
     def estimate_with_source(self, attacker, move, target_element, max_hp=None):
-        """(ожидаемо, худший случай, откуда: «журнал» / «формула» / «общая»)."""
+        """(ожидаемо, худший случай, откуда) с поправкой на эффекты текущего боя (self.modifiers)."""
+        expected, worst, source = self._estimate_clean(attacker, move, target_element, max_hp)
+        factor, unsure = self._mod_factor(attacker, move, target_element)
+        if factor == 1.0 and not unsure:
+            return expected, worst, source
+        return expected * factor, worst * factor * (UNSURE_MARGIN if unsure else 1.0), source + " + эффекты"
+
+    def _mod_factor(self, attacker, move, target_element):
+        """(во сколько раз эффекты боя меняют урон, неточно ли это). Баффы и дебаффы — очки к статам в той же
+        формуле «атака / защита»; снятая слабость (Negate) убирает бонус сильной стихии."""
+        if not self.modifiers:
+            return 1.0, False
+        mine, foe, negated = self.modifiers
+        factor, unsure = 1.0, False
+        if mine or foe:
+            pair = (self.stats(self.canon(attacker), self.attacker_level, self.enemy, self.level, self.enemy_rank)
+                    if self.stats is not None and self.enemy else None)
+            if pair is None:
+                unsure = True  # статов нет — насколько изменится урон, не посчитать
+            else:
+                a, d = pair
+                boosted = {k: v + mine.get(k, 0) for k, v in a.items()}
+                weakened = {k: max(1.0, v + foe.get(k, 0)) for k, v in d.items()}
+                plain = base_damage(move, a, d)
+                factor = base_damage(move, boosted, weakened) / plain if plain else 1.0
+        if negated and move.element != "Physical":
+            cal = self.calibration()
+            strong = cal.multiplier(move.element, target_element) if cal else multiplier(move.element, target_element)
+            if strong > 1:
+                factor /= strong
+        return factor, unsure
+
+    def _estimate_clean(self, attacker, move, target_element, max_hp=None):
+        """(ожидаемо, худший случай, откуда: «журнал» / «формула» / «общая») — без эффектов боя."""
         attacker = self.canon(attacker)
         similar = self._similar(attacker, move, target_element) if max_hp else []
         by_formula = None if len(similar) >= TRUST_SIMILAR else self.formula(attacker, move, target_element)
@@ -274,7 +309,7 @@ class CaptureView:
 
     def estimate(self, attacker, move, target_element, max_hp=None):
         expected, worst, source = self.book.estimate_with_source(attacker, move, target_element, max_hp)
-        return expected, worst * CAPTURE_DOUBT.get(source, 2.0)
+        return expected, worst * CAPTURE_DOUBT.get(source.split(" +")[0], 2.0)
 
     def observed(self, attacker, move, target_element) -> int:
         return self.book.observed(attacker, move, target_element)
