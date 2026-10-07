@@ -155,3 +155,19 @@ def test_tesseract_gets_ascii_paths_when_folder_has_cyrillic(tmp_path, monkeypat
     assert copy.isascii() and (tmp_path / "pd" / "miscrits-bot" / "tessdata" / "eng.traineddata").exists()
     # путь и так латиницей — не трогаем
     assert screen.ascii_dir(tmp_path, "x") == str(tmp_path)
+
+
+def test_fix_hp_restores_lost_leading_one():
+    from mbot.screen import fix_hp
+    # Slithero 25-го обычно ~105 HP, а прочитано 12/12 — это 112/112
+    assert fix_hp((12, 12), seen_max=105) == (112, 112)
+    # текущее HP по полоске: 12 из 112 при полоске на 10% — так и есть 12
+    assert fix_hp((12, 12), seen_max=105, bar=0.1) == (12, 112)
+    # без истории — по грубой формуле: 12 при нижней оценке 88 невозможно, 112 — да
+    assert fix_hp((12, 12), formula_low=88) == (112, 112)
+    # лишняя цифра (75 → 753) — не угадываем
+    assert fix_hp((70, 753), seen_max=73) is None
+    # «5» при обычных ~110 и «15» тоже не похоже — непрочитано
+    assert fix_hp((5, 5), seen_max=110) is None
+    # нормальное чтение не трогаем
+    assert fix_hp((40, 108), seen_max=105) == (40, 108)

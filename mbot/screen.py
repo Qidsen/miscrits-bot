@@ -386,6 +386,40 @@ def pick_hp(readings, bar=None) -> tuple | None:
 HP_BAR_TOLERANCE = 0.2
 
 
+def fix_hp(hp, seen_max=None, formula_low=None, bar=None):
+    """Проверка прочитанного HP противника по тому, сколько его должно быть, — или None, если чтение невозможное.
+    Tesseract теряет тонкую «1» в начале одинаково всеми способами (112 → 12), голосование тут не спасает.
+    seen_max — обычный максимум HP этого вида на этом уровне по прошлым боям; formula_low — нижняя оценка
+    по формуле (грубая, поэтому допуск широкий); bar — заполненность полоски HP."""
+    if hp is None:
+        return None
+    cur, top = hp
+
+    def too_low(v):
+        if seen_max:
+            return v < 0.6 * seen_max
+        return bool(formula_low) and v < 0.4 * formula_low
+
+    def plausible(v):
+        if seen_max:
+            return 0.75 * seen_max <= v <= 1.3 * seen_max
+        return not formula_low or v >= 0.4 * formula_low
+
+    if seen_max and top > 1.5 * seen_max:
+        return None  # лишняя цифра (75 → 753) — не угадываем
+    if too_low(top):
+        restored = int("1" + str(top))
+        if not plausible(restored):
+            return None
+        options = [c for c in (cur, int("1" + str(cur))) if c <= restored]
+        if bar is not None:
+            cur = min(options, key=lambda c: abs(c / restored - bar))
+        elif cur == top:
+            cur = restored
+        top = restored
+    return cur, top
+
+
 def parse_percent(texts) -> int | None:
     for t in texts:
         m = re.search(r"(\d{1,3})\s*%?", t)

@@ -121,3 +121,13 @@ def test_team_levels_unknown_without_the_bar():
     eyes.look()
     button = cv2.imread(str(Path(__file__).parent / "data" / "train_button.png"))
     assert eyes.read_team_levels(Snapshot((0, 0, 110, 110), button)) == [None] * 4
+
+
+def test_team_levels_survive_a_blinking_train_button():
+    # кто-то готов к тренировке — кнопка Train мигает (светлеет), её границы на экране плывут;
+    # раньше от этого плашки вырезались со сдвигом и «35» читалось как «5»
+    eyes, snap = _team_eyes()
+    x, y, w, h = snap.rect
+    button = eyes.image[y:y + h, x:x + w].astype(np.int16)
+    eyes.image[y:y + h, x:x + w] = np.clip(button + 70, 0, 255).astype(np.uint8)
+    assert eyes.read_team_levels(snap) == [35, 2, 2, 2]

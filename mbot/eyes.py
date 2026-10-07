@@ -172,6 +172,8 @@ class Eyes:
         self._grab = grabber
         self.image = None
         self._team_key, self._team_cache = None, None  # плашки уровней команды и что на них прочитано
+        self.last_hp_bar = None  # заполненность полоски HP при последнем read_hp
+        self.last_team_boxes = []  # где вырезались плашки уровней команды (для разбора сбоев)
         self._anchors = None
         self._anchors_for = None
         self._shift = None
@@ -278,7 +280,8 @@ class Eyes:
         if rect is None or self.ocr is None:
             return None
         image = crop(self.image, rect)
-        return pick_hp(self.ocr.read_all(image, parse_hp, "0123456789/"), hp_bar_ratio(image))
+        self.last_hp_bar = hp_bar_ratio(image)  # бот сверяет с ней HP, восстановленное после потерянной цифры
+        return pick_hp(self.ocr.read_all(image, parse_hp, "0123456789/"), self.last_hp_bar)
 
     def read_percent(self, element_id: str):
         return self._read(element_id, parse_percent, "0123456789%")
@@ -369,19 +372,22 @@ class Eyes:
             return unknown
         sx = found[0] - (core_rect[0] - train_snap.rect[0])
         sy = found[1] - (core_rect[1] - train_snap.rect[1])
-        area = crop(self.image, (max(sx, 0), max(sy, 0), train_snap.rect[2], train_snap.rect[3]))
-        button = blue_button(area)
+        # центр и размер кнопки — по обученному снимку, а не по живой кнопке: живая мигает, когда кто-то готов
+        # к тренировке, и её границы плывут — плашки вырезались со сдвигом («5» вместо «35»)
+        button = blue_button(train_snap.image)
         if button is None:
             return unknown
         bx, by, bw, bh = button
-        scale = bh / TRAIN_BLUE_H
-        centre_x, centre_y = max(sx, 0) + bx + bw / 2, max(sy, 0) + by + bh / 2
+        scale = bw / TRAIN_BLUE_W  # по ширине: высоту у скруглённых углов завышают полупрозрачные строки
+        centre_x, centre_y = sx + bx + bw / 2, sy + by + bh / 2
         w, h = TEAM_BADGE_W * scale, TEAM_BADGE_H * scale
         badges = []
+        self.last_team_boxes = []
         for dx in TEAM_BADGE_DX:
             cx, cy = centre_x + dx * scale, centre_y + TEAM_BADGE_DY * scale
-            box = (int(cx - w / 2), int(cy - h / 2), int(w), int(h))
-            badges.append(None if box[0] < 0 or box[1] < 0 else crop(self.image, box))
+            box = badge_box(self.image, cx, cy, w, h)
+            self.last_team_boxes.append(box)
+            badges.append(None if box is None else crop(self.image, box))
         # плашки те же, что в прошлый раз, — распознавать заново незачем (OCR четырёх плашек — около 1,5 с)
         key = b"".join(b.tobytes() if b is not None else b"-" for b in badges)
         if key == self._team_key:
@@ -394,7 +400,7 @@ class Eyes:
         return self._read(element_id, lambda texts: best_name(texts, names))
 
 
-TRAIN_BLUE_H = 61  # высота синей кнопки Train в px при масштабе, где замерены смещения ниже
+TRAIN_BLUE_W = 85  # ширина синей кнопки Train в px при масштабе, где замерены смещения ниже
 TEAM_BADGE_DX = (-418, -336, -254, -172)  # центры плашек уровня от центра кнопки Train
 TEAM_BADGE_DY = 25
 TEAM_BADGE_W, TEAM_BADGE_H = 30, 26
@@ -409,6 +415,15 @@ def blue_button(image):
     if len(rows) < 10 or len(cols) < 10:
         return None
     return int(cols.min()), int(rows.min()), int(cols.max() - cols.min() + 1), int(rows.max() - rows.min() + 1)
+
+
+def badge_box(image, cx, cy, w, h):
+    """Вырезка плашки уровня вокруг расчётной точки (или None, если она за краем экрана). По цвету плашку
+    не уточняем: её тёмно-синий совпадает с рамкой панели."""
+    box = (int(round(cx - w / 2)), int(round(cy - h / 2)), int(round(w)), int(round(h)))
+    if box[0] < 0 or box[1] < 0 or box[0] + box[2] > image.shape[1] or box[1] + box[3] > image.shape[0]:
+        return None
+    return box
 
 
 def parse_level(texts):

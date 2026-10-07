@@ -15,13 +15,13 @@ import numpy as np
 from .brain.capture import CAPTURE, PLAT_RARITIES, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, PRECIOUS_UNSEEN, STALL, Action, DamageModel, choose_capture,
                            choose_kill, moves_from_catalog, multiplier)
-from .brain.formula import owned_copy, stats_pair
+from .brain.formula import owned_copy, stats_at, stats_pair
 from .brain.hits import CaptureView, HitBook
 from .collection import Collection
 from .eyes import CORE_THRESHOLD, core_of
 from .mouse import VK_ESCAPE, FailSafe, press_key
 from .screen import crop as crop_area
-from .screen import find, find_scored
+from .screen import find, find_scored, fix_hp
 from .storage import ABILITY_SLOTS, POPUPS, TEAM_SLOTS
 from .worldmap import Locator, species_in_zone, to_map, to_view, view_rect
 
@@ -65,6 +65,7 @@ BLINK_FRAMES, BLINK_INTERVAL, BLINK_DELTA = 7, 0.15, 12.0
 SUMMARY_MAX_WAIT = 2.0  # с: дольше анимация опыта в сводке не идёт
 SUMMARY_STILL = 12  # изменившихся пикселей (в уменьшенном кадре), меньше которых сводка неподвижна
 SUMMARY_SHOTS = 60  # столько последних снимков сводки храним в logs/summary
+TEAM_SHOTS = 80  # и вырезок плашек уровней команды в logs/team
 
 
 def ready_label_of(row):
@@ -72,6 +73,20 @@ def ready_label_of(row):
     так шаблон подходит к любому готовому криту."""
     h = row.shape[0]
     return row[int(h * 0.6):int(h * 0.95), :]
+
+
+def count_names(pages) -> int:
+    return len({n for page in pages for n in page if n})
+
+
+def has_gaps(pages) -> bool:
+    """Есть ли нераспознанные кнопки. Пустые слоты в конце последней страницы — не пробел: у крита просто
+    меньше способностей (или следующие ещё закрыты по уровню)."""
+    if any(n is None for page in pages[:-1] for n in page):
+        return True
+    last = pages[-1] if pages else []
+    named = [i for i, n in enumerate(last) if n]
+    return bool(named) and any(n is None for n in last[:max(named) + 1])
 
 
 def summary_label_of(snap):
@@ -646,11 +661,11 @@ class Bot:
                 self.hits.enemy = enemy.names[0] if enemy else None
                 self.hits.enemy_rank = rank
                 decision = decide(enemy.id if enemy else None, rank, enemy.rarity if enemy else "", self._collection())
-                who = f"{enemy.names[0]} ({enemy.rarity}) {rank or '?'}" if enemy else "?"
+                who = f"{enemy.names[0]} ({enemy.rarity}) {rank or '?'} ур. {enemy_level or '?'}" if enemy else "?"
                 self._say(f"бой: {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} — {decision.reason}")
                 self._emit("battle_log", f"──── {who} → {'ЛОВИМ' if decision.action == CAPTURE else 'убиваем'} "
                                          f"({decision.reason}) ────")
-            hp = self.eyes.read_hp("enemy_hp")
+            hp = self._enemy_hp(enemy)
             if hp:
                 self._last_max_hp = hp[1]
             mine = self.eyes.read_hp("my_hp")
@@ -822,6 +837,22 @@ class Bot:
         self._after_battle(enemy, rank, captured, plat_used, my_ratio)
         return enemy
 
+    def _enemy_hp(self, enemy):
+        """HP противника с проверкой: сколько его бывает у этого вида на этом уровне (по прошлым боям, иначе
+        по формуле). Потерянная «1» (112 → 12) восстанавливается, невозможное чтение — None (не знаю)."""
+        raw = self.eyes.read_hp("enemy_hp")
+        if raw is None or enemy is None:
+            return raw
+        level = self.hits.level
+        seen = self.hits.typical_max_hp(enemy.names[0], level)
+        low = stats_at(enemy, level, {"hp": 1})["hp"] if level else None
+        fixed = fix_hp(raw, seen, low, getattr(self.eyes, "last_hp_bar", None))
+        if fixed != raw:
+            self._say(f"HP противника прочитано как {raw[0]}/{raw[1]} — "
+                      + (f"исправил на {fixed[0]}/{fixed[1]}" if fixed else "не похоже на правду, считаю непрочитанным")
+                      + f" (обычно у {enemy.names[0]} ур. {level or '?'}: {seen or '?'})")
+        return fixed
+
     def _park_mouse(self):
         """Увести курсор с кнопок способностей: иначе игра показывает подсказку («Attack Power…»),
         она закрывает строку «It's your turn!», и бот не узнаёт свой ход."""
@@ -905,9 +936,36 @@ class Bot:
             return  # панель не видно (окно, попап) — оставляем прошлые
         slots = ("active", *TEAM_SLOTS)
         team = dict(zip(slots, levels))
-        if team != self._team_levels:
-            self._say("команда: " + " · ".join(str(v) if v else "?" for v in levels))
+        old = self._team_levels
+        dropped = [s for s in slots if old.get(s) and team.get(s) and team[s] < old[s]]
+        if dropped and len(dropped) < sum(1 for s in slots if old.get(s) and team.get(s)):
+            # уровень не падает: если остальные плашки на месте, а одна «уменьшилась» — это ошибка чтения,
+            # а не смена команды (когда меняют состав, меняются сразу несколько плашек)
+            self._say("команда: " + ", ".join(f"{s} {old[s]}→{team[s]}" for s in dropped)
+                      + " — уровень не может упасть, оставляю прежний")
+            for s in dropped:
+                team[s] = old[s]
+        if team != old:
+            self._say("команда: " + " · ".join(str(team[s]) if team[s] else "?" for s in slots))
+            self._save_team_badges(levels)
         self._team_levels = team
+
+    def _save_team_badges(self, levels):
+        """Вырезки плашек уровней — в logs/team: при новом сбое чтения будет что разобрать."""
+        boxes = getattr(self.eyes, "last_team_boxes", None) or []
+        if self.eyes.image is None or not boxes:
+            return
+        folder = self._logs_dir / "team"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for i, (box, level) in enumerate(zip(boxes, levels)):
+            if box is None:
+                continue
+            ok, buf = cv2.imencode(".png", crop_area(self.eyes.image, box))
+            if ok:
+                (folder / f"{stamp}-{i}-{level or 'x'}.png").write_bytes(buf.tobytes())
+        for old in sorted(folder.glob("*.png"))[:-TEAM_SHOTS]:
+            old.unlink(missing_ok=True)
 
     def _slot_level(self, slot, name=None):
         """Уровень крита в ячейке: с верхней панели (с учётом смен в этом бою), иначе по имени."""
@@ -1157,11 +1215,18 @@ class Bot:
     def _known_moves(self, my_name, species):
         """Атаки и прочие способности крита, которые видны на кнопках (все страницы)."""
         tries = self._page_reads.get(my_name, 0)
-        unknown = my_name in self._pages and any(n is None for page in self._pages[my_name] for n in page)
+        unknown = my_name in self._pages and has_gaps(self._pages[my_name])
         if my_name not in self._pages or (unknown and tries < PAGE_READ_TRIES):
             # на странице есть нераспознанные кнопки (читали во время анимации) — перечитываем на следующем ходу
             self._page_reads[my_name] = tries + 1
-            self._pages[my_name] = self._read_pages(species)
+            pages = self._read_pages(species)
+            old = self._pages.get(my_name)
+            if old and count_names(pages) < count_names(old):
+                # прочитали меньше, чем знали (не та страница, анимация) — старое не затираем
+                self._say(f"способности {my_name}: прочитал {count_names(pages)} вместо {count_names(old)} — "
+                          "оставляю прежний список")
+            else:
+                self._pages[my_name] = pages
         names = {n for page in self._pages[my_name] for n in page if n}
         moves = moves_from_catalog(species.abilities, names, self._enchanted(species))
         attack_names = {m.name for m in moves}
@@ -1175,7 +1240,22 @@ class Bot:
         return [self.eyes.read_name(slot, ability_names) for slot in ABILITY_SLOTS]
 
     def _read_pages(self, species) -> list:
+        """Все страницы способностей по порядку. Игра оставляет открытой страницу последнего удара, поэтому
+        сначала листаем назад до первой — иначе после удара с последней страницы бот видел только её."""
         self.eyes.look()
+        if self.eyes.knows("ability_prev"):
+            current = self._read_slots(species)
+            for _ in range(MAX_ABILITY_PAGES - 1):
+                arrow = self.eyes.sees("ability_prev")
+                if arrow is None:
+                    break
+                self._press(arrow, "ability_prev")
+                self._sleep(0.6)
+                self.eyes.look()
+                page = self._read_slots(species)
+                if page == current:
+                    break  # дальше назад некуда
+                current = page
         pages = [self._read_slots(species)]
         if not self.eyes.knows("ability_next"):
             return pages

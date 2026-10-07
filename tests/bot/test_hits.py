@@ -100,3 +100,29 @@ def test_physical_hits_count_against_any_element():
     book.record("Patriot", 35, cinders, "Flameling", "Fire", 15, 67, 20)
     assert book.observed("Patriot", mush, "NatureEarth") == 2
     assert book.observed("Patriot", cinders, "NatureEarth") == 0  # стихийной — только по той же стихии
+
+
+def test_impossible_and_outlier_hits_do_not_blow_up_worst_case(tmp_path):
+    # The Big Finale по Spinnerette: нормальные удары ~0.017 доли HP на единицу силы и одна строка с
+    # максимумом HP «5» — из-за неё худший случай был 1057
+    finale = Move("The Big Finale", 7, 4, 105, "Fire")
+    path = tmp_path / "hits.csv"
+    book = HitBook(path, DamageModel())
+    for damage in (50, 52, 49, 55, 51):
+        book.record("Patriot", 35, finale, "Spinnerette", "Water", 25, 110, damage)
+    book.record("Patriot", 35, finale, "Spinnerette", "Water", 25, 5, 38)  # невозможная — не пишется
+    assert len(book.hits) == 5
+    book.level, book.attacker_level = 25, 35
+    _, worst = book.estimate("Patriot", finale, "Water", max_hp=107)
+    assert worst < 100
+    # старый журнал с такой строкой — она отбрасывается при загрузке
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("2026-10-06 01:53:47,Patriot,35,The Big Finale,7,4,Fire,Spinnerette,Water,25,5,38,,,\n")
+    assert len(HitBook(path, DamageModel()).hits) == 5
+
+
+def test_drop_outliers_keeps_normal_spread():
+    from mbot.brain.hits import drop_outliers
+    rows = [("a", 0.017), ("b", 0.02), ("c", 0.015), ("d", 0.271)]
+    assert [h for h, _ in drop_outliers(rows)] == ["a", "b", "c"]
+    assert drop_outliers(rows[:2]) == rows[:2]  # на двух ударах не судим

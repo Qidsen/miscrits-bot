@@ -528,3 +528,51 @@ def test_slot_levels_from_top_bar_choose_before_switching(tmp_path):
     bot._battle_levels = {"active": 35, "team_1": 2, "team_2": 2, "team_3": 2}
     assert bot._least_known_slot(enemy_level=12) is None  # все слабые — не меняем вовсе
     assert bot._least_known_slot(enemy_level=3) in ("team_1", "team_2", "team_3")  # против 3-го — можно
+
+
+def test_pages_are_read_from_the_first_even_after_a_hit_from_the_last(tmp_path):
+    # Defender: после удара Rubble игра оставила открытой последнюю страницу — раньше бот читал только её
+    layouts = [["Red Card", "Landslide", "Mother Nature", "Safeguard"],
+               ["Penalty Shot", "Power Up", "Hit", "Leaves"],
+               ["Rubble", None, None, None]]
+    view = {"page": 2}
+    eyes = FakeEyes([{"see": {"battle", "my_turn", "ability_next", "ability_prev"}}])
+    for k in ("ability_next", "ability_prev"):
+        eyes.teaching.elements[k] = Snapshot((0, 0, 10, 10))
+    slots = ("ability_1", "ability_2", "ability_3", "ability_4")
+    eyes.read_name = lambda element_id, names: layouts[view["page"]][slots.index(element_id)] if element_id in slots else None
+    bot, _ = make_bot(eyes, tmp_path)
+
+    def press(rect, what=""):
+        if what == "ability_prev":
+            view["page"] = max(0, view["page"] - 1)
+        elif what == "ability_next":
+            view["page"] = min(2, view["page"] + 1)
+    bot._press = press
+    defender = Species(7, ("Defender",), "Earth", "Common", {},
+                       tuple({"name": n, "ap": 10, "type": "Attack", "element": "Earth"} for page in layouts for n in page if n))
+    assert bot._read_pages(defender) == layouts
+    # нераспознанных нет: пустые слоты в конце последней страницы — просто нет способностей
+    from mbot.bot import has_gaps
+    assert not has_gaps(layouts)
+    assert has_gaps([["Red Card", None, "Hit", "Leaves"], ["Rubble", None, None, None]])
+    # перечитали хуже, чем знали, — прежний список не затирается
+    bot._pages["Defender"] = layouts
+    bot._page_reads["Defender"] = 0
+    bot._read_pages = lambda species: [["Rubble", None, None, "Leaves"]]
+    bot._pages["Defender"] = [["Red Card", None, "Mother Nature", "Safeguard"]] + layouts[1:]  # есть пробел — перечитает
+    moves, _ = bot._known_moves("Defender", defender)
+    assert {m.name for m in moves} >= {"Red Card", "Penalty Shot", "Rubble"}
+
+
+def test_team_level_never_drops_from_a_misread(tmp_path):
+    eyes = FakeEyes([{"see": set()}])
+    eyes.teaching.routes["train"] = [Step(Snapshot((0, 0, 5, 5)))]
+    readings = iter([[35, 26, 26, 25], [5, 26, 26, 25], [2, 2, 2, 2]])
+    eyes.read_team_levels = lambda snap: next(readings)
+    bot, _ = make_bot(eyes, tmp_path)
+    bot._read_team()
+    bot._read_team()  # «5» вместо «35», остальные на месте — ошибка чтения
+    assert bot._team_levels["active"] == 35
+    bot._read_team()  # поменялась вся команда — принимаем
+    assert list(bot._team_levels.values()) == [2, 2, 2, 2]

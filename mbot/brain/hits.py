@@ -57,6 +57,20 @@ class Hit:
         return Move(self.ability, self.ap, self.times, 100, self.atk_element)
 
 
+OUTLIER = 3.0  # удар с долей урона втрое выше медианы похожих — ошибка чтения, а не урон
+
+
+def drop_outliers(scaled):
+    """[(удар, доля)] без выбросов: доля > OUTLIER × медиана похожих (при 3+ ударах) — почти наверняка
+    неверно прочитанный максимум HP. Худший случай по такой доле взлетает в десятки раз."""
+    if len(scaled) < 3:
+        return scaled
+    shares = sorted(s for _, s in scaled)
+    median = shares[len(shares) // 2]
+    kept = [(h, s) for h, s in scaled if s <= OUTLIER * median]
+    return kept or scaled
+
+
 def _int(value):
     try:
         return int(value)
@@ -100,6 +114,8 @@ class HitBook:
         max_hp, damage = _int(row.get("enemy_max_hp")), _int(row.get("damage"))
         if not ap or not max_hp or damage is None:
             return None
+        if damage > max_hp:
+            return None  # невозможно: максимум HP прочитан с потерянной цифрой (38 урона при «5» HP)
         return Hit(self.canon(row.get("attacker", "")), _int(row.get("attacker_level")), row.get("ability", ""), ap, times,
                    row.get("atk_element", ""), row.get("enemy", ""), row.get("enemy_element", ""),
                    _int(row.get("enemy_level")), row.get("enemy_rank") or None, max_hp, damage,
@@ -107,7 +123,11 @@ class HitBook:
 
     def record(self, attacker, attacker_level, move: Move, enemy_name, enemy_element, enemy_level, enemy_max_hp,
                damage, enemy_rank=None, kill=False) -> None:
-        """Записать удар (и промах — damage 0) в журнал; в прогноз идут только попадания."""
+        """Записать удар (и промах — damage 0) в журнал; в прогноз идут только попадания.
+        Невозможный удар (урон больше максимума HP цели) не пишется вовсе: одна такая строка навсегда портит
+        худший случай (The Big Finale «1057» по Spinnerette)."""
+        if not enemy_max_hp or damage > enemy_max_hp:
+            return
         attacker = self.canon(attacker)
         row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "attacker": attacker, "attacker_level": attacker_level or "",
                "ability": move.name, "ap": move.ap, "times": move.times, "atk_element": move.element,
@@ -210,7 +230,7 @@ class HitBook:
         by_formula = None if len(similar) >= TRUST_SIMILAR else self.formula(attacker, move, target_element)
         if similar and by_formula is None:
             # крит с тех пор подрос — пересчитываем старые удары на его нынешнюю атаку
-            scaled = [(h, h.share * self.level_factor(h, move)) for h in similar]
+            scaled = drop_outliers([(h, h.share * self.level_factor(h, move)) for h in similar])
             shares = [s for h, s in scaled if not h.kill] or [s for _, s in scaled]
             mean, top = sum(shares) / len(shares), max(s for _, s in scaled)  # добившие — только в максимум
             margin = (1.3 if move.times > 1 else 1.15) if len(shares) >= 3 else 1.5
@@ -223,6 +243,16 @@ class HitBook:
                 worst = max(worst, max(kills) * move.power * max_hp * 1.2)
             return expected, worst, "формула"
         return (*self.fallback.estimate(attacker, move, target_element, max_hp), "общая")
+
+    def typical_max_hp(self, enemy, level):
+        """Обычный максимум HP этого вида на этом уровне (±2) по прошлым боям — медиана, или None."""
+        if not enemy or not level:
+            return None
+        values = sorted(h.enemy_max_hp for h in self.hits
+                        if h.enemy == enemy and h.enemy_level is not None and abs(h.enemy_level - level) <= 2)
+        if len(values) < 3:
+            return None
+        return values[len(values) // 2]
 
     def observed(self, attacker, move, target_element) -> int:
         """Сколько попаданий этой стихией по этой стихии цели видели (любого уровня)."""
