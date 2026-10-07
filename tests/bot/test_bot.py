@@ -568,14 +568,31 @@ def test_pages_are_read_from_the_first_even_after_a_hit_from_the_last(tmp_path):
 def test_team_level_never_drops_from_a_misread(tmp_path):
     eyes = FakeEyes([{"see": set()}])
     eyes.teaching.routes["train"] = [Step(Snapshot((0, 0, 5, 5)))]
-    readings = iter([[35, 26, 26, 25], [5, 26, 26, 25], [2, 2, 2, 2]])
+    readings = iter([[35, 26, 26, 25], [5, 26, 26, 25], [35, 26, 26, 25], [35, 2, 2, 2],
+                     [35, 2, 2, 5], [35, 2, 2, 5]])
     eyes.read_team_levels = lambda snap: next(readings)
     bot, _ = make_bot(eyes, tmp_path)
     bot._read_team()
-    bot._read_team()  # «5» вместо «35», остальные на месте — ошибка чтения
+    bot._read_team()  # «5» вместо «35», остальные на месте — потерянная цифра
     assert bot._team_levels["active"] == 35
-    bot._read_team()  # поменялась вся команда — принимаем
-    assert list(bot._team_levels.values()) == [2, 2, 2, 2]
+    bot._read_team()
+    bot._read_team()  # первого оставили, трёх поменяли на новичков 2-го уровня — принимаем сразу
+    assert list(bot._team_levels.values()) == [35, 2, 2, 2]
+    bot._read_team()  # 2 → 5 — рост, не падение; принимаем сразу
+    assert list(bot._team_levels.values()) == [35, 2, 2, 5]
+
+
+def test_suspicious_drop_is_accepted_when_read_twice(tmp_path):
+    eyes = FakeEyes([{"see": set()}])
+    eyes.teaching.routes["train"] = [Step(Snapshot((0, 0, 5, 5)))]
+    readings = iter([[35, 26, 26, 25], [35, 2, 26, 25], [35, 2, 26, 25]])
+    eyes.read_team_levels = lambda snap: next(readings)
+    bot, _ = make_bot(eyes, tmp_path)
+    bot._read_team()
+    bot._read_team()  # 26 → 2: может быть потерянная цифра, может быть новый крит
+    assert bot._team_levels["team_1"] == 26
+    bot._read_team()  # прочиталось так же второй раз — значит, правда новый крит
+    assert bot._team_levels["team_1"] == 2
 
 
 def test_crit_leaves_when_two_enemy_turns_would_kill_it(tmp_path):

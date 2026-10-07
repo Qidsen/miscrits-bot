@@ -141,6 +141,7 @@ class Bot:
         self._no_targets_said = None  # (локация, зона), где уже сказали, что целей охоты тут нет
         self._team_levels = {}  # "active"/"team_1".. -> уровень с верхней панели мира перед боем
         self._battle_levels = {}  # то же, но с учётом смен в текущем бою
+        self._team_suspect = None  # чтение команды, похожее на потерянную цифру, — ждёт подтверждения
         self._crit_hp_abs = {}  # имя крита -> HP в единицах, когда видели его последний раз
         self._enemy_hit = None
         self.fx = BattleState()  # эффекты текущего боя на моём крите и на противнике
@@ -1032,13 +1033,18 @@ class Bot:
         team = dict(zip(slots, levels))
         old = self._team_levels
         dropped = [s for s in slots if old.get(s) and team.get(s) and team[s] < old[s]]
-        if dropped and len(dropped) < sum(1 for s in slots if old.get(s) and team.get(s)):
-            # уровень не падает: если остальные плашки на месте, а одна «уменьшилась» — это ошибка чтения,
-            # а не смена команды (когда меняют состав, меняются сразу несколько плашек)
-            self._say("команда: " + ", ".join(f"{s} {old[s]}→{team[s]}" for s in dropped)
-                      + " — уровень не может упасть, оставляю прежний")
-            for s in dropped:
-                team[s] = old[s]
+        lost_digit = len(dropped) == 1 and str(old[dropped[0]]) != str(team[dropped[0]]) and (
+            str(old[dropped[0]]).startswith(str(team[dropped[0]])) or str(old[dropped[0]]).endswith(str(team[dropped[0]])))
+        if lost_digit and levels != self._team_suspect:
+            # одна плашка «потеряла» цифру (35 → 5), остальные на месте — похоже на сбой чтения: оставляем прежний
+            # уровень, пока то же самое не прочитается второй раз подряд. Сменили критов (35 → 2, сразу несколько
+            # плашек, или повторилось) — принимаем
+            s = dropped[0]
+            self._say(f"команда: {s} {old[s]}→{team[s]} — похоже на потерянную цифру, проверю в следующий раз")
+            self._team_suspect = levels
+            team[s] = old[s]
+        else:
+            self._team_suspect = None
         if team != old:
             self._say("команда: " + " · ".join(str(team[s]) if team[s] else "?" for s in slots))
             self._save_team_badges(levels)
