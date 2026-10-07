@@ -164,6 +164,22 @@ class HitBook:
         then, now = stats_at(species, hit.attacker_level)[stat], stats_at(species, self.attacker_level)[stat]
         return now / then if then else 1.0
 
+    def target_factor(self, hit, move, max_hp) -> float:
+        """Во сколько раз доля урона этого удара из журнала больше/меньше у нынешней цели.
+        В журнале урон хранится долей максимума HP цели, а урон зависит не от HP, а от защиты: по противнику
+        13-го уровня (защита меньше) удар заходит сильнее, чем по 28-му, хотя и HP у него меньше.
+        Доля сейчас = урон тогда × (защита тогда / защита сейчас) / HP сейчас."""
+        if not (self.species_of and hit.enemy_level and self.level and max_hp) or (
+                hit.enemy_level == self.level and hit.enemy == self.enemy):
+            return 1.0
+        then_species, now_species = self.species_of(hit.enemy), self.species_of(self.enemy) if self.enemy else None
+        if then_species is None or now_species is None:
+            return 1.0
+        stat = "pd" if move.element == "Physical" else "ed"
+        then_def = stats_at(then_species, hit.enemy_level)[stat]
+        now_def = stats_at(now_species, self.level)[stat]
+        return (then_def / now_def) * (hit.enemy_max_hp / max_hp) if now_def else 1.0
+
     def _same(self, attacker, move, target_element):
         """Удары по цели этой стихии: сначала этой же атакой; если ею ещё не били — атаками той же стихии
         с тем же числом ударов (Cinders 1×7 и The Big Finale 4×7 обе Fire, но бьют по-разному).
@@ -265,7 +281,8 @@ class HitBook:
         by_formula = None if len(similar) >= TRUST_SIMILAR else self.formula(attacker, move, target_element)
         if similar and by_formula is None:
             # крит с тех пор подрос — пересчитываем старые удары на его нынешнюю атаку
-            scaled = drop_outliers([(h, h.share * self.level_factor(h, move)) for h in similar])
+            scaled = drop_outliers([(h, h.share * self.level_factor(h, move) * self.target_factor(h, move, max_hp))
+                                    for h in similar])
             shares = [s for h, s in scaled if not h.kill] or [s for _, s in scaled]
             mean, top = sum(shares) / len(shares), max(s for _, s in scaled)  # добившие — только в максимум
             margin = (1.3 if move.times > 1 else 1.15) if len(shares) >= 3 else 1.5
@@ -273,7 +290,8 @@ class HitBook:
         if by_formula is not None:
             expected, worst = by_formula
             # удары, которые добивали, — «урон не меньше»: худший случай не ниже того, что уже бывало
-            kills = [h.share * self.level_factor(h, move) for h in self._same(attacker, move, target_element) if h.kill]
+            kills = [h.share * self.level_factor(h, move) * self.target_factor(h, move, max_hp)
+                     for h in self._same(attacker, move, target_element) if h.kill]
             if kills and max_hp:
                 worst = max(worst, max(kills) * move.power * max_hp * 1.2)
             return expected, worst, "формула"

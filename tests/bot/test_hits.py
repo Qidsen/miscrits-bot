@@ -126,3 +126,20 @@ def test_drop_outliers_keeps_normal_spread():
     rows = [("a", 0.017), ("b", 0.02), ("c", 0.015), ("d", 0.271)]
     assert [h for h, _ in drop_outliers(rows)] == ["a", "b", "c"]
     assert drop_outliers(rows[:2]) == rows[:2]  # на двух ударах не судим
+
+
+def test_lower_level_target_takes_more_than_hits_on_a_higher_one():
+    # в журнале удары Mush по Pestling 28-го уровня; сейчас Pestling 13-го: защита меньше — урон больше,
+    # хотя и HP у него меньше (раньше прогноз пересчитывался только по HP и выходил заниженным)
+    from miscrits_hud.catalog import Species
+    from mbot.brain.formula import stats_at
+    pestling = Species(9, ("Pestling",), "Nature", "Common", {}, (), (("hp", "Moderate"), ("pd", "Moderate")))
+    mush = Move("Mush", 15, 1, 95, "Physical")
+    book = HitBook(None, DamageModel(), species_of=lambda name: pestling if name == "Pestling" else None)
+    for damage in (40, 42, 41):
+        book.record("Patriot", 35, mush, "Pestling", "Nature", 28, 120, damage)
+    book.level, book.enemy, book.attacker_level = 13, "Pestling", 35
+    expected, _ = book.estimate("Patriot", mush, "Nature", max_hp=60)
+    defense = lambda level: stats_at(pestling, level)["pd"]
+    assert abs(expected - 41 * defense(28) / defense(13)) < 1
+    assert expected > 41
