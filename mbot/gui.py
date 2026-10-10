@@ -409,6 +409,7 @@ class MainWindow(QMainWindow):
             self.home / "learn.json", logs, on_event=lambda kind, data: self.bridge.event.emit(kind, data),
             foreground=lambda: hotkeys.foreground_process()[0],
             location_fn=lambda: self.hud.controller.location, companion=self.companion, game_rect_fn=game_rect_on_image,
+            key_expired_fn=lambda: getattr(self.hud.controller, "key_expired", False),
         )
         self.bot._move_mouse = lambda point: mouse.move_to(to_screen((point[0], point[1], 0, 0))[:2])
         self.bot.start()

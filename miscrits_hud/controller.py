@@ -74,6 +74,11 @@ class Controller:
         name = self._names.get(location_id, "") if location_id else (self._player.location_name if self._player else "")
         return (name, area_id) if name else None
 
+    @property
+    def key_expired(self) -> bool:
+        """Ключ сессии был, но истёк (или сервер его отверг): коллекция и зона больше не обновляются."""
+        return self._token is not None and not self._token_valid()
+
     def request_refresh(self):
         self._manual = True
 

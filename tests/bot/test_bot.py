@@ -645,3 +645,25 @@ def test_bot_says_why_it_farms_when_targets_live_in_another_zone(tmp_path):
     assert said == ["целей охоты в зоне 3 нет (Inferno — зона 6) — фармлю ближайшие точки"]
     bot._map_targets()
     assert len(said) == 1  # один раз на зону
+
+
+def test_expired_key_runs_the_refresh_route_and_does_not_spam(tmp_path):
+    expired = {"v": True}
+    eyes = FakeEyes([{"see": set()}])
+    bot = Bot(eyes, lambda r: None, lambda: Catalog([ME, FLUE, GOLD]), lambda: None, Settings(), tmp_path / "l.json",
+              tmp_path, key_expired_fn=lambda: expired["v"])
+    said, routes = [], []
+    bot._say = said.append
+    bot._run_route = routes.append
+    bot._refresh_key_if_needed()  # маршрута нет — один раз говорим, что его надо записать
+    bot._refresh_key_if_needed()
+    assert routes == [] and len(said) == 1 and "не записан" in said[0]
+    bot._key_refreshed_at = None
+    eyes.teaching.routes["refresh_key"] = [Step(Snapshot((0, 0, 5, 5)))]
+    bot._refresh_key_if_needed()  # книжка → Quests → закрыть
+    bot._refresh_key_if_needed()  # сразу ещё раз — нет: ждём боя, после него ключ попадёт в лог
+    assert routes == ["refresh_key"]
+    expired["v"] = False
+    bot._key_refreshed_at -= 10_000
+    bot._refresh_key_if_needed()  # ключ свежий — ничего не делаем
+    assert routes == ["refresh_key"]

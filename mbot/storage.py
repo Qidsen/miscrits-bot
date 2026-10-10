@@ -60,7 +60,8 @@ ELEMENT_BY_ID = {e.id: e for e in ELEMENTS}
 POPUPS = ("popup_1", "popup_2", "popup_3", "popup_4")
 ABILITY_SLOTS = ("ability_1", "ability_2", "ability_3", "ability_4")
 TEAM_SLOTS = ("team_1", "team_2", "team_3")
-ROUTES = {"train": "Тренировка", "heal": "Лечение (до хила и обратно)"}
+ROUTES = {"train": "Тренировка", "heal": "Лечение (до хила и обратно)",
+          "refresh_key": "Обновить ключ игры (книжка → Quests → закрыть)"}
 
 
 def encode_image(image: np.ndarray) -> str:

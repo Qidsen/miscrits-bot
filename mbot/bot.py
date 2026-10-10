@@ -67,6 +67,7 @@ SUMMARY_MAX_WAIT = 2.0  # с: дольше анимация опыта в сво
 SUMMARY_STILL = 12  # изменившихся пикселей (в уменьшенном кадре), меньше которых сводка неподвижна
 SUMMARY_SHOTS = 60  # столько последних снимков сводки храним в logs/summary
 TEAM_SHOTS = 80  # и вырезок плашек уровней команды в logs/team
+KEY_RETRY = 600  # с: если ключ после маршрута «Обновить ключ» и боя так и не обновился — повторяем не чаще
 
 
 def ready_label_of(row):
@@ -119,12 +120,15 @@ class Stats:
 class Bot:
     def __init__(self, eyes, hands, catalog_fn, player_fn, settings, learn_path, logs_dir,
                  on_event=lambda kind, data: None, foreground=None, location_fn=None, companion=None,
-                 game_rect_fn=None):
+                 game_rect_fn=None, key_expired_fn=None):
         """hands(rect) — клик; catalog_fn() -> Catalog; player_fn() -> Player | None (коллекция из HUD);
         foreground() -> имя exe активного окна; on_event(kind, data) — для GUI;
         location_fn() -> (локация, зона) | None; companion — карты и маркеры сайта;
-        game_rect_fn() -> окно игры (x, y, w, h) в координатах скриншота."""
+        game_rect_fn() -> окно игры (x, y, w, h) в координатах скриншота;
+        key_expired_fn() -> истёк ли ключ игры (HUD больше не получает коллекцию и зону)."""
         self.eyes = eyes
+        self._key_expired_fn = key_expired_fn
+        self._key_refreshed_at = None  # когда последний раз проходили маршрут «Обновить ключ»
         self._press_key = press_key  # подменяется в тестах: настоящие нажатия клавиш там не нужны
         self._move_mouse = None  # (x, y) на скриншоте -> подвести курсор; задаёт окно программы
         self._acted = False  # только что сделали боевое действие — следующий «мой ход» ждём после чужого
@@ -362,7 +366,28 @@ class Bot:
             return
         if self._dismiss_popups():
             return
+        self._refresh_key_if_needed()
         self._hunt()
+
+    def _refresh_key_if_needed(self):
+        """Ключ игры истёк — игра продлевает его, только когда её окно (Quests) получает отказ сервера, а
+        в лог новый ключ попадает после боя. Поэтому: проходим записанный маршрут «книжка → Quests → закрыть»,
+        а бой будет следующим шагом сам. Не чаще раза в KEY_RETRY: если не помогло — пишем и ждём."""
+        if self._key_expired_fn is None or not self._key_expired_fn():
+            return
+        if not self.eyes.teaching.routes.get("refresh_key"):
+            if self._key_refreshed_at is None:
+                self._key_refreshed_at = time.monotonic()
+                self._say("ключ игры истёк, а маршрут «Обновить ключ игры» не записан — коллекция и зона "
+                          "не обновляются (запишите его на вкладке «Точки и маршруты»)")
+            return
+        now = time.monotonic()
+        if self._key_refreshed_at is not None and now - self._key_refreshed_at < KEY_RETRY:
+            return
+        again = self._key_refreshed_at is not None
+        self._key_refreshed_at = now
+        self._say("ключ игры истёк — открываю Quests, чтобы игра его продлила" + (" (ещё раз)" if again else ""))
+        self._run_route("refresh_key")
 
     def _dismiss_popups(self) -> bool:
         for element_id in ("battle_won", "captured", *POPUPS):
@@ -1691,7 +1716,8 @@ class Bot:
             while rect is None and time.monotonic() < end:
                 self._checkpoint()
                 self.eyes.look()
-                rect = self.eyes.sees_snap(step.snap) or self.eyes.sees_snap(step.snap, anywhere=True)
+                # как у тренировки: снимок шага мог захватить фон локации, где его учили, — ищем и по середине
+                rect = self._locate_step(step.snap, near=step.snap.rect)
                 if rect is None:
                     time.sleep(0.4)
             if rect is None:

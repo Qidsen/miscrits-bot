@@ -226,3 +226,11 @@ def test_new_utc_day_rebuilds_view():
     rig.weekday = 5  # наступила пятница по UTC
     state = rig.tick(0.5)
     assert state is not None and [r.name for r in state.view.other_rows] == ["Flue"]
+
+
+def test_key_expired_flag_for_the_bot(rig):
+    assert not rig.c.key_expired  # ключа ещё не было — не «истёк», а «ждём»
+    rig.tick(0, TokenSeen("old", NOW - 60))
+    assert rig.c.key_expired
+    rig.tick(1, TokenSeen("fresh", NOW + 3600))
+    assert not rig.c.key_expired
