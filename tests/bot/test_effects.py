@@ -78,11 +78,11 @@ def test_capture_counts_poison_ticking_before_next_turn():
         def observed(self, *a, **k):
             return 5
 
-    # 45 HP, порог 10: без яда удар до 20 безопасен (35 места), с ядом 14 места остаётся 21 — тоже
+    # 45 HP, порог 10, яд 14: в среднем останется 45 − 14 − 15 = 16 ≥ 10 — бьём
     assert choose_capture([hit], Fixed(), "Me", "Fire", 45, 100, 5, 95, True, extra=14).kind == ATTACK
-    # 40 HP: с ядом 14 места 16 < 20 — бить опасно, ловим
-    assert choose_capture([hit], Fixed(), "Me", "Fire", 40, 100, 5, 95, True, extra=14).kind == CAPTURE
-    assert choose_capture([hit], Fixed(), "Me", "Fire", 40, 100, 5, 95, True).kind == ATTACK
+    # 38 HP: с ядом останется 9 < 10 — ловим; без яда 23 — бьём
+    assert choose_capture([hit], Fixed(), "Me", "Fire", 38, 100, 5, 95, True, extra=14).kind == CAPTURE
+    assert choose_capture([hit], Fixed(), "Me", "Fire", 38, 100, 5, 95, True).kind == ATTACK
 
 
 def test_header_and_veto_effects_come_from_descriptions():

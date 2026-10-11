@@ -12,9 +12,9 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from .brain.capture import CAPTURE, PLAT_RARITIES, decide
+from .brain.capture import CAPTURE, KILL, PLAT_RARITIES, Decision, decide
 from .brain.combat import (ATTACK, PRECIOUS_EXTRA, PRECIOUS_SEEN, PRECIOUS_UNSEEN, STALL, Action, DamageModel, choose_capture,
-                           choose_kill, moves_from_catalog, multiplier)
+                           choose_kill, moves_from_catalog, multiplier, safe_hit)
 from .brain.effects import FOE, ME, BattleState, effects_of
 from .brain.formula import owned_copy, stats_at, stats_pair
 from .brain.hits import CaptureView, HitBook
@@ -653,6 +653,7 @@ class Bot:
         enemy = rank = decision = None
         reads = 0  # сколько раз пробовали прочитать противника (не больше двух ходов)
         plat_used = 0
+        capture_tried = False  # обычная поимка — одна на бой: после неудачной кнопка Capture уже не работает
         last = None  # (имя моего крита, Move, HP противника до удара)
         my_ratio = 1.0
         captured = False
@@ -808,19 +809,34 @@ class Bot:
             moves, extras = self._known_moves(my_name, me)
             if not moves:
                 raise Stuck(f"не нашёл атак у {my_name}")
+            paid_ok = (decision is not None and decision.allow_plat and self.eyes.knows("plat_capture")
+                       and plat_used < self.settings.plat_capture_limit)
+            if decision.action == CAPTURE and capture_tried and not paid_ok:
+                # бесплатная поимка одна на бой, дальше Capture спрашивает 5 платины. Раньше бот жал Capture каждый
+                # ход, окно с ценой никто не подтверждал, и ход сгорал (Charpy: 14 «попыток», потом поражение)
+                who = enemy.names[0] if enemy else "?"
+                if enemy is not None and enemy.rarity in PLAT_RARITIES:
+                    why = ("лимит платиновых исчерпан" if plat_used >= self.settings.plat_capture_limit
+                           else "кнопка «за 5 платины» не обучена")
+                    shot = self._screenshot("capture-spent")
+                    self._say(f"⚠ {who}: бесплатная поимка не удалась, дальше только за платину, а {why} — пауза, "
+                              f"решайте сами (скриншот: {shot})")
+                    self.pause(f"{who}: поимка не удалась — поймайте платиной сами или снимите паузу, бот добьёт")
+                    self._checkpoint()
+                    decision = Decision(KILL, False, "поимка не удалась")
+                    last = None
+                    continue  # пока стояли на паузе, экран мог поменяться — смотрим заново
+                self._say(f"{who}: бесплатная поимка не удалась, платину на него не тратим — добиваю")
+                decision = Decision(KILL, False, "поимка не удалась")
             if decision.action == CAPTURE:
                 can_capture = self.eyes.sees("capture")
-                plat = None
-                if (can_capture is None and decision.allow_plat
-                        and plat_used < self.settings.plat_capture_limit):
-                    plat = self.eyes.sees("plat_capture")
                 chance = self.eyes.read_percent("capture_chance") if self.eyes.knows("capture_chance") else None
                 precious = bool(enemy) and enemy.rarity in PLAT_RARITIES
                 # неразобранный эффект на поле — урон непредсказуем: берём запас как для Exotic/Legendary
                 careful = precious or bool(self.fx.unknown())
                 action = choose_capture(moves, CaptureView(self.hits), my_name, target_element,
                                         hp[0] if hp else 1, hp[1] if hp else 1, chance,
-                                        self.settings.capture_min_chance, (can_capture or plat) is not None,
+                                        self.settings.capture_min_chance, can_capture is not None,
                                         precious=careful, floor=self.settings.capture_hp_floor,
                                         extra=self.fx.dot(FOE))
                 high_chance = chance is not None and chance >= self.settings.capture_min_chance
@@ -839,13 +855,20 @@ class Bot:
                 self._explain(enemy, rank, hp, my_name, mine, moves, target_element, decision, action, chance,
                               precious)
                 if action.kind == CAPTURE:
-                    if can_capture is not None:
-                        self._act(can_capture, "capture")
+                    self._act(can_capture, "capture")
+                    # бесплатная уже потрачена (или бот её не застал) — игра спрашивает 5 платины
+                    found, rect = (self._wait_for(("plat_capture",), timeout=4 if capture_tried else 1.5)
+                                   if self.eyes.knows("plat_capture") else (None, None))
+                    if rect is None:
                         self._say(f"пробую поймать (шанс {chance if chance is not None else '?'}%)")
-                    else:
+                    elif paid_ok:
                         plat_used += 1
-                        self._act(plat, "plat_capture")
-                        self._say(f"платиновая поимка {plat_used}/{self.settings.plat_capture_limit}")
+                        self._press(rect, "поймать за 5 платины")
+                        self._say(f"пробую поймать за 5 платины ({plat_used}/{self.settings.plat_capture_limit}, "
+                                  f"шанс {chance if chance is not None else '?'}%)")
+                    else:
+                        self._press_key(VK_ESCAPE)  # платину на него не тратим — закрываем окно с ценой
+                    capture_tried = True
                     last = None
                     self._sleep(2.5)
                     continue
@@ -1236,7 +1259,7 @@ class Bot:
                 expected, worst = self.hits.estimate(name, action.move, target_element, hp[1])
                 self.hits.attacker_level = current_level
                 return slot, name, (f"у него {action.move.name}: ожидаемо {expected:.0f}, худший случай {worst:.0f} — "
-                                    f"у цели {hp[0]} HP, останется не меньше {self.settings.capture_hp_floor}")
+                                    f"у цели {hp[0]} HP, в среднем останется {hp[0] - expected:.0f}")
         return None
 
     def _explain(self, enemy, rank, hp, my_name, mine, moves, target_element, decision, action, chance, precious,
@@ -1251,7 +1274,7 @@ class Bot:
                 worst = CaptureView(self.hits).estimate(my_name, m, target_element, hp[1])[1]
                 unseen = precious and seen < PRECIOUS_SEEN
                 worst_used = worst * (PRECIOUS_UNSEEN if unseen else PRECIOUS_EXTRA if precious else 1)
-                ok = worst_used <= hp[0] - floor
+                ok = safe_hit(expected, worst_used, hp[0], floor, self.fx.dot(FOE))
                 verdict = ("безопасно" if ok else "может добить") + (" · мало данных, запас ×2.5" if unseen else "")
             else:
                 verdict = ""
@@ -1264,14 +1287,14 @@ class Bot:
         if action.kind == CAPTURE:
             text = (f"ловлю: шанс {chance}% ≥ {self.settings.capture_min_chance}%" if chance is not None
                     and chance >= self.settings.capture_min_chance else
-                    f"ловлю: безопасных ударов нет — любой может опустить ниже {floor} HP (шанс {chance if chance is not None else '?'}%)")
+                    f"ловлю: подходящих ударов нет — любой опустит ниже {floor} HP или может добить (шанс {chance if chance is not None else '?'}%)")
         elif action.kind == STALL:
             text = "пропускаю удар: любой может добить, а поймать сейчас нельзя — безопасная способность"
         else:
             row = next(r for r in rows if r["name"] == action.move.name)
             text = f"{action.move.name}: ожидаемо {row['expected']:.0f}, худший случай {row['worst']:.0f}"
             if decision.action == CAPTURE and hp:
-                text += f" — у цели {hp[0]} HP, останется не меньше {floor} → бью"
+                text += f" — у цели {hp[0]} HP, в среднем останется {hp[0] - row['expected']:.0f} (порог {floor}) → бью"
             elif why:
                 text += f" — {why}"
         log.info(text)

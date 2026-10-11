@@ -137,9 +137,35 @@ def test_precious_needs_real_observations_and_half_hp():
     a = choose_capture([HIT, MULTI], m, "Me", "Fire", hp=30, max_hp=100, chance=5, min_chance=70,
                        can_capture=True, precious=True)
     assert a.kind == ATTACK and a.move == HIT
-    # экзотик с 20 HP: 11.5 > 50% от 20 — не бьём, ловим
+    # экзотик с 20 HP: в среднем останется 10, худший 11.5 × 1.25 не убьёт — бьём
     assert choose_capture([HIT], m, "Me", "Fire", hp=20, max_hp=100, chance=5, min_chance=70,
+                          can_capture=True, precious=True).kind == ATTACK
+    # 19 HP: в среднем останется 9 < 10 — ловим
+    assert choose_capture([HIT], m, "Me", "Fire", hp=19, max_hp=100, chance=5, min_chance=70,
                           can_capture=True, precious=True).kind == CAPTURE
+
+
+def test_charpy_weak_hit_before_single_free_capture():
+    """Charpy (Legendary) с 24 HP: Swipe в среднем 12, худший 17.7 (×1.25 = 22). Раньше требовали «в худшем
+    останется 10» и ловили при 70%; удар до ~12 HP цель не убивает и поднимает шанс."""
+    swipe = Move("Swipe", 7, 1, 100, "Physical")
+    mush = Move("Mush", 15, 1, 100, "Physical")
+
+    class Book:
+        def estimate(self, attacker, move, target_element, max_hp=None):
+            return {"Swipe": (11.7, 17.7), "Mush": (24.6, 39.1)}[move.name]
+
+        def observed(self, *a):
+            return 20
+
+    a = choose_capture([swipe, mush], Book(), "Freedom", "Fire", 24, 136, 70, 95, True, precious=True)
+    assert a.kind == ATTACK and a.move == swipe
+    # после Swipe ~13 HP: ещё один уведёт ниже порога — ловим
+    assert choose_capture([swipe, mush], Book(), "Freedom", "Fire", 13, 136, 85, 95, True,
+                          precious=True).kind == CAPTURE
+    # худший случай мог бы убить — не бьём, даже если в среднем всё хорошо
+    assert choose_capture([swipe], Book(), "Freedom", "Fire", 22, 136, 70, 95, True,
+                          precious=True).kind == CAPTURE
 
 
 class _Fixed:

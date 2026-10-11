@@ -125,6 +125,35 @@ def test_capture_new_species(tmp_path):
     assert bot.stats.captures == 1 and bot.stats.catches == [(3, "B")]
 
 
+def test_paid_capture_is_confirmed_for_exotic(tmp_path):
+    # бесплатная поимка уже потрачена: после Capture игра спрашивает 5 платины — Exotic ловим и за платину
+    turn = {"see": {"battle", "my_turn", "capture", "plat_capture"}, "enemy_hp": (5, 50), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn] * 4 + [{"see": {"captured"}}, {"see": set()}], enemy="Goldy")
+    eyes.teaching.elements["plat_capture"] = Snapshot((0, 0, 10, 10))
+    bot, _ = make_bot(eyes, tmp_path)
+    said = []
+    bot._say = said.append
+    bot._battle()
+    assert any("за 5 платины (1/3" in m for m in said)
+    assert bot.stats.captures == 1
+
+
+def test_common_is_not_caught_for_platinum(tmp_path):
+    # Flue (Common, нового вида нет) — окно «за 5 платины» закрываем и больше Capture не жмём, а добиваем
+    turn = {"see": {"battle", "my_turn", "capture", "plat_capture"}, "enemy_hp": (5, 50), "my_hp": (100, 100)}
+    eyes = FakeEyes([turn] * 20 + [{"see": {"battle_won"}}, {"see": set()}])
+    eyes.teaching.elements["plat_capture"] = Snapshot((0, 0, 10, 10))
+    bot, _ = make_bot(eyes, tmp_path)
+    said, keys = [], []
+    bot._say = said.append
+    bot._press_key = keys.append
+    bot._battle()
+    assert keys  # Escape: окно с ценой закрыли
+    assert not any("платины (" in m for m in said)
+    assert any("добиваю" in m for m in said)
+    assert sum("пробую поймать" in m for m in said) == 0
+
+
 def test_low_hp_triggers_heal_route(tmp_path):
     turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (10, 100)}
     eyes = FakeEyes([turn, turn, {"see": {"battle_won"}}, {"see": set()}])
@@ -475,7 +504,7 @@ def test_team_choice_respects_level_and_hp(tmp_path):
 def _keeper_battle(tmp_path, who_in, seen_levels):
     """Бой «на убой» против Flue 12-го уровня; в ячейке team_1 — Keeper 2-го уровня (так видно на экране)."""
     turn = {"see": {"battle", "my_turn"}, "enemy_hp": (50, 50), "my_hp": (100, 100)}
-    eyes = FakeEyes([turn] * 6 + [{"see": {"battle_won"}}, {"see": set()}])
+    eyes = FakeEyes([turn] * 20 + [{"see": {"battle_won"}}, {"see": set()}])
     for k in ("team_1", "switch_confirm"):
         eyes.teaching.elements[k] = Snapshot((0, 0, 10, 10))
     keeper = Species(9, ("Keeper",), "NatureEarth", "Legendary", {}, ABILITIES)

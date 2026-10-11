@@ -8,7 +8,7 @@ DEFAULT_HIGH = 4.0
 LOW_HP_RATIO = 0.35
 PRECIOUS_SEEN = 2  # Exotic/Legendary: только атаками, чей урон по этой стихии уже видели
 PRECIOUS_EXTRA = 1.25  # и с дополнительным запасом к худшей оценке
-PRECIOUS_UNSEEN = 2.5  # атака, чей урон по этой стихии не видели: худшая оценка ×2.5 должна оставить цели floor HP
+PRECIOUS_UNSEEN = 2.5  # атака, чей урон по этой стихии не видели: худшая оценка ×2.5 не должна добить
 
 
 @dataclass(frozen=True)
@@ -148,26 +148,33 @@ def choose_kill(moves, model, attacker, target_element) -> Move:
     return max(moves, key=lambda m: model.estimate(attacker, m, target_element)[0] * min(m.accuracy, 100) / 100)
 
 
+def safe_hit(expected, high, hp, floor, extra=0) -> bool:
+    """Можно ли бить при поимке: в среднем останется не меньше floor, в худшем — цель жива (хотя бы 1 HP).
+    extra — урон, который цель получит до нашего следующего хода и без удара (яд…)."""
+    return expected <= hp - floor - extra and high <= hp - 1 - extra
+
+
 def choose_capture(moves, model, attacker, target_element, hp, max_hp, chance, min_chance, can_capture,
                    precious=False, floor=10, extra=0) -> Action:
     """Подводим HP цели как можно ближе к floor и только потом ловим.
-    Удар безопасен, если даже по худшей оценке у цели останется не меньше floor HP. Из безопасных берём
-    самый сильный. Безопасных нет — ловим (или занимаем ход безопасной способностью, если поймать нельзя).
+    Удар годится, если в среднем у цели останется не меньше floor HP, а по худшей оценке (она уже с запасом)
+    цель выживет. Из таких берём самый сильный. Нет таких — ловим (или занимаем ход безопасной способностью,
+    если поймать нельзя). Раньше требовали «и в худшем случае не ниже floor» — запасы складывались, и Charpy
+    с 24 HP ловили при 70%, хотя Swipe снимал ему 11 и убить не мог.
     Сразу ловим, только если шанс уже не ниже min_chance.
     precious — Exotic/Legendary: худшая оценка с запасом ×1.25, а у атак, чей урон по этой стихии не видели, ×2.5.
     extra — урон, который цель получит и без удара до нашего следующего хода (яд и прочее по ходам)."""
     if can_capture and chance is not None and chance >= min_chance:
         return Action(CAPTURE)
-    room = hp - floor - extra
     safe = []
     for m in moves:
-        high = model.estimate(attacker, m, target_element, max_hp)[1]
+        expected, high = model.estimate(attacker, m, target_element, max_hp)
         if precious:
             # невиданные по этой стихии атаки тоже можно, но с очень большим запасом: иначе по новой стихии
             # (например, двойной) бить было бы нечем, и бот кидал бы Capture при 1%
             seen = model.observed(attacker, m, target_element) >= PRECIOUS_SEEN
             high *= PRECIOUS_EXTRA if seen else PRECIOUS_UNSEEN
-        if high <= room:
+        if safe_hit(expected, high, hp, floor, extra):
             safe.append(m)
     if safe:
         return Action(ATTACK, max(safe, key=lambda m: model.estimate(attacker, m, target_element, max_hp)[0]))
